@@ -1,0 +1,9 @@
+[project]
+name = "flashcard_engine"
+version = "0.1.0"
+description = "Local, fail-soft flashcard material-set production engine"
+requires-python = ">=3.10"
+readme = "README.md"
+
+[tool.ruff]
+line-length = 100

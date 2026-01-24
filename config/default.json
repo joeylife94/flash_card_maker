@@ -1,0 +1,27 @@
+{
+  "cleanup": {
+    "lowercase": true,
+    "remove_numeric_only": true,
+    "min_token_length": 3,
+    "allow_short_tokens": ["a", "an", "i"],
+    "drop_patterns": [
+      "^page$",
+      "^unit$",
+      "^lesson$",
+      "^chapter$"
+    ],
+    "max_tokens_per_page": 200
+  },
+  "segment": {
+    "expand_scale": 5.0,
+    "min_area_ratio": 0.01
+  },
+  "layout": {
+    "single_word_max_tokens": 2
+  },
+  "confidence": {
+    "multi_word_default": 0.5,
+    "multi_word_min": 0.4,
+    "multi_word_max": 0.6
+  }
+}

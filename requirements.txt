@@ -1,0 +1,7 @@
+pillow>=10.0.0
+pymupdf>=1.23.0
+# Optional (OCR)
+# paddleocr>=2.7.0
+# Optional segmenters (best-effort; install manually if needed)
+# ultralytics>=8.0.0
+# opencv-python>=4.8.0
