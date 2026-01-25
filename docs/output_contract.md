@@ -137,3 +137,11 @@ workspace/jobs/<job_id>/pages/crops/page_<page:03d>/token_<i:04d>_<slug>.png
 - `export --format csv`는 기본적으로 `needs_review == false` AND `status != rejected` 카드만 내보냅니다.
 - `--include-review`를 지정하면 `review` 상태 카드도 포함할 수 있습니다.
 - 이미지가 누락된 경우 해당 카드는 skip하고 `errors.jsonl`에 경고를 기록합니다.
+
+## Card lifecycle (v0.4)
+
+상태 전이 규칙:
+
+- `review -> active`: `apply-review`의 `approve` 또는 `edit`(edit 후 approve)
+- `review -> rejected`: `apply-review`의 `reject`
+- `rejected` 카드는 기본 export에서 항상 제외되며, `review_queue.json`에도 다시 나타나지 않습니다.

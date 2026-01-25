@@ -47,7 +47,7 @@ python -m flashcard_engine.cli run --input .\samples\images --type images --lang
 ## Typical workflow (v0.3)
 
 ```text
-run -> validate -> (review) -> apply-review -> export
+run -> validate -> apply-review -> export -> validate
 ```
 
 Example:
@@ -62,6 +62,9 @@ python -m flashcard_engine.cli apply-review --job-dir .\workspace\jobs\<job_id> 
 
 # export only non-review cards by default
 python -m flashcard_engine.cli export --job-dir .\workspace\jobs\<job_id> --format csv --out .\deck.csv
+
+# validate again after review/export
+python -m flashcard_engine.cli validate --job-dir .\workspace\jobs\<job_id>
 ```
 
 주의: low-confidence/review 상태의 카드는 export 전에 검토하는 것을 권장합니다.
@@ -90,4 +93,72 @@ Output Contract 파일과 `front_image_path` 참조가 모두 존재하는지 �
 
 ```powershell
 python -m flashcard_engine.cli validate --job-dir .\workspace\jobs\<job_id>
+```
+
+## Deterministic smoke (v0.3, copy/paste)
+
+이 섹션만 따라 하면 v0.3 기능( `apply-review`, `export`, `validate`, mocked OCR )을 다른 문서 없이 재현할 수 있습니다.
+
+```powershell
+# 0) generate deterministic input image
+python .\samples\smoke_no_ocr\generate_image.py
+
+# 1) run (mocked OCR, force review via high min-confidence)
+python -m flashcard_engine.cli run \
+  --input .\samples\smoke_no_ocr\pages \
+  --type images \
+  --lang en \
+  --workspace .\workspace \
+  --source "smoke_no_ocr" \
+  --min-confidence 0.99 \
+  --segmenter off \
+  --use-mocked-ocr .\samples\smoke_no_ocr\stage\ocr
+
+# (prints job dir, example: .\workspace\jobs\<job_id>)
+
+# 2) validate immediately after run
+python -m flashcard_engine.cli validate --job-dir .\workspace\jobs\<job_id>
+
+# 3) apply-review (edit-only idempotency check)
+python -m flashcard_engine.cli apply-review \
+  --job-dir .\workspace\jobs\<job_id> \
+  --feedback .\samples\smoke_no_ocr\review_feedback.edit_only.json
+
+# re-run apply-review with the same feedback (must report applied=0)
+python -m flashcard_engine.cli apply-review \
+  --job-dir .\workspace\jobs\<job_id> \
+  --feedback .\samples\smoke_no_ocr\review_feedback.edit_only.json
+
+# 3b) apply full deterministic feedback (approves/rejects so export has 4 rows)
+python -m flashcard_engine.cli apply-review \
+  --job-dir .\workspace\jobs\<job_id> \
+  --feedback .\samples\smoke_no_ocr\review_feedback.example.json
+
+# 4) export csv
+python -m flashcard_engine.cli export \
+  --job-dir .\workspace\jobs\<job_id> \
+  --format csv \
+  --out .\workspace\smoke_no_ocr.csv
+
+# 5) validate again
+python -m flashcard_engine.cli validate --job-dir .\workspace\jobs\<job_id>
+```
+
+또는 스크립트로 한 번에 검증:
+
+```powershell
+python .\samples\smoke_no_ocr\check_v03_idempotency.py
+```
+
+Expected CSV (stable fields only):
+
+- rejected 카드는 export에서 제외됩니다 (기본 smoke fixture에서 `delta`를 reject하도록 예시가 제공됨)
+- row order는 token index 기준으로 유지됩니다: `token_0000`, `token_0001`, `token_0002`, `token_0004`
+
+```csv
+front_text,back_text,front_image_path,source_ref,card_id,review_reason
+alpha,,pages/crops/page_001/token_0000_alpha_*.png,pages/page_000.png,ab7e194355c5a24f69e3af2906fc2e673a513933,
+beta,,pages/crops/page_001/token_0001_beta_*.png,pages/page_000.png,1daf32f023b902aa77e910afefe24973e6d6130f,
+gamma,,pages/crops/page_001/token_0002_gamma_*.png,pages/page_000.png,10fc9906c94ab8937e7fb30069ed31505e44c707,
+epsilon,,pages/crops/page_001/token_0004_epsilon_*.png,pages/page_000.png,67cb74167c1978379d678935c63088429535fcb2,
 ```

@@ -83,6 +83,12 @@ def apply_review_feedback(*, job_dir: str | Path, feedback_path: str | Path) -> 
             stats.skipped_unknown_card += 1
             continue
 
+        # Lifecycle hardening: do not allow rejected -> active via approve/edit.
+        if card.get("status") == "rejected" and action in ("approve", "edit"):
+            stats.skipped_already_applied += 1
+            review_by_id.pop(card_id, None)
+            continue
+
         # Detect already-applied
         if action == "approve" and card.get("status") == "active" and not card.get("needs_review"):
             stats.skipped_already_applied += 1
@@ -93,12 +99,17 @@ def apply_review_feedback(*, job_dir: str | Path, feedback_path: str | Path) -> 
             review_by_id.pop(card_id, None)
             continue
 
+        # Handle edit as "edit then approve". Must be idempotent.
         if action == "edit":
             if not isinstance(edited_text, str) or not edited_text.strip():
                 # treat invalid edit as no-op
                 stats.skipped_already_applied += 1
                 continue
+
             normalized_text = edited_text.strip()
+
+            # If it's already active and already equals the edited text, do nothing (idempotent)
+            # but ensure the review item is cleaned up.
             if (
                 card.get("status") == "active"
                 and not card.get("needs_review")
@@ -107,14 +118,12 @@ def apply_review_feedback(*, job_dir: str | Path, feedback_path: str | Path) -> 
                 stats.skipped_already_applied += 1
                 review_by_id.pop(card_id, None)
                 continue
-            continue
 
-        now = utc_now_iso()
-
-        if action == "edit":
-            # At this point normalized_text is valid and differs (or card isn't active yet).
+            # Apply edit (even if the text happens to be the same while still in review)
             card["word"] = normalized_text
             action = "approve"
+
+        now = utc_now_iso()
 
         if action == "approve":
             card["status"] = "active"
@@ -138,7 +147,15 @@ def apply_review_feedback(*, job_dir: str | Path, feedback_path: str | Path) -> 
     result_out["cards"] = list(cards_by_id.values())
 
     review_out = dict(review) if isinstance(review, dict) else {"items": []}
-    review_out["items"] = list(review_by_id.values())
+    # Ensure rejected cards never appear in review output.
+    filtered_items: list[dict[str, Any]] = []
+    for it in review_by_id.values():
+        cid = str(it.get("card_id") or "")
+        c = cards_by_id.get(cid)
+        if c is not None and c.get("status") == "rejected":
+            continue
+        filtered_items.append(it)
+    review_out["items"] = filtered_items
 
     write_json(result_path, result_out)
     write_json(review_path, review_out)
