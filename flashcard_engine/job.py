@@ -84,7 +84,17 @@ def init_job_outputs(paths: JobPaths) -> None:
             "review_items_total": 0,
             "segment_success_count": 0,
             "segment_fail_count": 0,
-            "ocr_empty_count": 0
+            "ocr_empty_count": 0,
+            # v0.2
+            "pages_single_word": 0,
+            "pages_multi_word": 0,
+            "multiword_tokens": 0,
+            "multiword_crops_written": 0,
+            "multiword_crop_failures": 0,
+            "multiword_crops_gated_small": 0,
+            "multiword_crops_gated_ratio": 0,
+            "deduped_tokens": 0,
+            "review_items": 0,
         },
     )
     # errors.jsonl: create empty file

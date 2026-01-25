@@ -4,6 +4,10 @@
     "remove_numeric_only": true,
     "min_token_length": 3,
     "allow_short_tokens": ["a", "an", "i"],
+    "dedupe_enabled": true,
+    "drop_punctuation_only": true,
+    "drop_suspicious_tokens": false,
+    "suspicious_token_patterns": [],
     "drop_patterns": [
       "^page$",
       "^unit$",
@@ -12,16 +16,28 @@
     ],
     "max_tokens_per_page": 200
   },
+  "crop": {
+    "bbox_crop_padding_px": 10,
+    "bbox_crop_min_area_px": 4096,
+    "bbox_crop_min_area_ratio": 0.0,
+    "bbox_crop_max_area_ratio": 0.8
+  },
   "segment": {
     "expand_scale": 5.0,
     "min_area_ratio": 0.01
   },
   "layout": {
-    "single_word_max_tokens": 2
+    "single_word_max_tokens": 2,
+    "single_word_dominant_token_ratio": 0.7,
+    "single_word_max_hull_area_ratio": 0.25,
+    "single_word_max_tokens_fallback": 6
   },
   "confidence": {
     "multi_word_default": 0.5,
     "multi_word_min": 0.4,
     "multi_word_max": 0.6
+  },
+  "review": {
+    "enabled": true
   }
 }

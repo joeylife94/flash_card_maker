@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,61 @@ def safe_filename_token(text: str, max_len: int = 50) -> str:
     text = re.sub(r"[^a-z0-9_-]+", "_", text)
     text = re.sub(r"_+", "_", text).strip("_")
     return text[:max_len] or "token"
+
+
+def slugify(text: str, max_len: int = 50, *, add_hash: bool = True) -> str:
+    """Safe filename slug.
+
+    Notes:
+    - Keeps output ASCII-safe for Windows paths.
+    - Optionally appends a short sha1 suffix to reduce collisions (recommended).
+    """
+    base = safe_filename_token(text, max_len=max_len)
+    if not add_hash:
+        return base
+    h = hashlib.sha1(text.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
+    # keep total length bounded
+    if len(base) + 1 + len(h) > max_len:
+        base = base[: max(1, max_len - 1 - len(h))]
+    return f"{base}_{h}"
+
+
+def stable_card_id(source_ref: str, page_id: str, text: str, bbox_xyxy: Any) -> str:
+    """Stable id: sha1(source_ref + page_id + text + bbox_xyxy).
+
+    bbox_xyxy is normalized into 'x0,y0,x1,y1' string when possible.
+    """
+    bbox_str = ""
+    try:
+        if bbox_xyxy is not None:
+            x0, y0, x1, y1 = bbox_xyxy
+            bbox_str = f"{int(x0)},{int(y0)},{int(x1)},{int(y1)}"
+    except Exception:
+        bbox_str = ""
+
+    payload = f"{source_ref}|{page_id}|{text}|{bbox_str}".encode("utf-8")
+    return hashlib.sha1(payload, usedforsecurity=False).hexdigest()
+
+
+def clamp_int(v: int, lo: int, hi: int) -> int:
+    return int(max(lo, min(hi, int(v))))
+
+
+def clamp_bbox_xyxy(bbox_xyxy: Any, *, w: int, h: int) -> tuple[int, int, int, int] | None:
+    """Clamp bbox to image bounds. Returns None if bbox is invalid."""
+    try:
+        x0, y0, x1, y1 = bbox_xyxy
+        x0 = clamp_int(x0, 0, max(0, w - 1))
+        y0 = clamp_int(y0, 0, max(0, h - 1))
+        x1 = clamp_int(x1, 1, max(1, w))
+        y1 = clamp_int(y1, 1, max(1, h))
+        if x1 <= x0:
+            x1 = min(w, x0 + 1)
+        if y1 <= y0:
+            y1 = min(h, y0 + 1)
+        return x0, y0, x1, y1
+    except Exception:
+        return None
 
 
 def write_json(path: str | Path, data: Any) -> None:

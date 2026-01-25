@@ -1,0 +1,13 @@
+{
+  "page_id": "page_001",
+  "raw_count": 5,
+  "clean_count": 5,
+  "deduped_count": 0,
+  "tokens": [
+    {"text": "alpha", "confidence": 0.98, "bbox_xyxy": [10, 10, 80, 50]},
+    {"text": "beta", "confidence": 0.97, "bbox_xyxy": [90, 10, 170, 50]},
+    {"text": "gamma", "confidence": 0.96, "bbox_xyxy": [180, 10, 235, 50]},
+    {"text": "delta", "confidence": 0.95, "bbox_xyxy": [10, 65, 90, 110]},
+    {"text": "epsilon", "confidence": 0.94, "bbox_xyxy": [100, 65, 220, 110]}
+  ]
+}

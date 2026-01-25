@@ -13,6 +13,8 @@ class EngineConfig:
     segment: dict[str, Any]
     layout: dict[str, Any]
     confidence: dict[str, Any]
+    crop: dict[str, Any]
+    review: dict[str, Any]
 
 
 def load_config(config_path: str | Path) -> EngineConfig:
@@ -22,4 +24,6 @@ def load_config(config_path: str | Path) -> EngineConfig:
         segment=data.get("segment", {}),
         layout=data.get("layout", {}),
         confidence=data.get("confidence", {}),
+        crop=data.get("crop", {}),
+        review=data.get("review", {}),
     )

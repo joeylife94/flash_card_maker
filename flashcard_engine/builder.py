@@ -3,7 +3,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .utils import clamp
+from .utils import clamp, stable_card_id
+
+
+# Review reason enums (stable strings)
+RR_OCR_EMPTY = "OCR_EMPTY"
+RR_LAYOUT_UNCERTAIN = "LAYOUT_UNCERTAIN"
+RR_WORD_MISSING = "WORD_MISSING"
+RR_LOW_CONFIDENCE = "LOW_CONFIDENCE"
+RR_SEGMENT_FAILED = "SEGMENT_FAILED"
+RR_CROP_FAILED = "CROP_FAILED"
+RR_CROP_GATED_SMALL = "CROP_GATED_SMALL"
+RR_CROP_GATED_RATIO = "CROP_GATED_RATIO"
+RR_SUSPICIOUS_BBOX = "SUSPICIOUS_BBOX"
+RR_HEURISTIC_WARNING = "HEURISTIC_WARNING"
 
 
 def _pick_representative_token(clean: dict[str, Any]) -> dict[str, Any] | None:
@@ -37,24 +50,32 @@ class FlashcardBuilder:
         if layout_type == "single_word":
             token = _pick_representative_token(clean)
             if not token:
+                card_id = stable_card_id(source_ref, page_id, "UNKNOWN", None)
                 cards.append(
                     {
+                        "card_id": card_id,
                         "page_id": page_id,
                         "layout_type": layout_type,
                         "word": "UNKNOWN",
+                        "bbox_xyxy": None,
+                        "method": "page",
                         "front_image_path": page_image_path,
                         "source_ref": source_ref,
                         "confidence": 0.0,
                         "needs_review": True,
-                        "reasons": ["ocr_empty"],
+                        "reasons": [RR_OCR_EMPTY],
                     }
                 )
                 review_items.append(
                     {
+                        "card_id": card_id,
                         "page_id": page_id,
                         "source_ref": source_ref,
+                        "text": "",
+                        "bbox_xyxy": None,
                         "word_candidates": [],
-                        "reason": "ocr_empty",
+                        "review_reason": RR_OCR_EMPTY,
+                        "reason": RR_OCR_EMPTY,
                         "suggested_action": "manual_enter_word_or_fix_ocr",
                     }
                 )
@@ -62,29 +83,37 @@ class FlashcardBuilder:
 
             word = token.get("text", "")
             conf = float(token.get("confidence", 0.0))
+            bbox_xyxy = token.get("bbox_xyxy")
 
             front = page_image_path
             reasons: list[str] = []
             needs_review = False
+            method = "page"
 
             if segment and segment.get("status") == "success" and segment.get("crop_path"):
                 front = segment["crop_path"]
+                method = "segmenter"
             else:
-                reasons.append("segment_failed_or_skipped")
+                reasons.append(RR_SEGMENT_FAILED)
 
             if not word:
                 needs_review = True
-                reasons.append("word_missing")
+                reasons.append(RR_WORD_MISSING)
 
             if conf < self.min_confidence:
                 needs_review = True
-                reasons.append("low_confidence")
+                reasons.append(RR_LOW_CONFIDENCE)
+
+            card_id = stable_card_id(source_ref, page_id, str(word), bbox_xyxy)
 
             cards.append(
                 {
+                    "card_id": card_id,
                     "page_id": page_id,
                     "layout_type": layout_type,
                     "word": word,
+                    "bbox_xyxy": bbox_xyxy,
+                    "method": method,
                     "front_image_path": front,
                     "source_ref": source_ref,
                     "confidence": conf,
@@ -93,13 +122,17 @@ class FlashcardBuilder:
                 }
             )
 
-            if needs_review and ("segment_failed_or_skipped" in reasons or "low_confidence" in reasons):
+            if needs_review and (RR_SEGMENT_FAILED in reasons or RR_LOW_CONFIDENCE in reasons):
                 review_items.append(
                     {
+                        "card_id": card_id,
                         "page_id": page_id,
                         "source_ref": source_ref,
+                        "text": str(word),
+                        "bbox_xyxy": bbox_xyxy,
                         "word_candidates": [t.get("text") for t in clean.get("tokens", []) if t.get("text")],
-                        "reason": "segment_failed" if "segment_failed_or_skipped" in reasons else "low_confidence",
+                        "review_reason": RR_SEGMENT_FAILED if RR_SEGMENT_FAILED in reasons else RR_LOW_CONFIDENCE,
+                        "reason": RR_SEGMENT_FAILED if RR_SEGMENT_FAILED in reasons else RR_LOW_CONFIDENCE,
                         "suggested_action": "manual_crop_or_fix_word",
                     }
                 )
@@ -118,17 +151,48 @@ class FlashcardBuilder:
                 raw_conf = float(t.get("confidence", c_default))
                 conf = clamp(raw_conf, cmin, cmax)
 
-                needs_review = True  # MVP: multi_word is inherently ambiguous
-                reasons = ["multi_word_page"]
-                if raw_conf < self.min_confidence:
-                    reasons.append("low_confidence")
+                bbox_xyxy = t.get("bbox_xyxy")
+                crop_path = t.get("crop_path")
+                crop_status = t.get("crop_status")
+                warnings = t.get("warnings") or []
 
+                # Default: multi_word tokens do NOT go to review.
+                needs_review = False
+                reasons: list[str] = []
+
+                front = page_image_path
+                method = "page"
+                if crop_path:
+                    front = crop_path
+                    method = "bbox_crop"
+                elif crop_status == "failed":
+                    # Distinguish gate reasons from generic failures.
+                    if "CROP_GATED_SMALL" in warnings:
+                        reasons.append(RR_CROP_GATED_SMALL)
+                    if "CROP_GATED_RATIO" in warnings:
+                        reasons.append(RR_CROP_GATED_RATIO)
+                    if RR_CROP_GATED_SMALL not in reasons and RR_CROP_GATED_RATIO not in reasons:
+                        reasons.append(RR_CROP_FAILED)
+
+                if raw_conf < self.min_confidence:
+                    reasons.append(RR_LOW_CONFIDENCE)
+
+                # Map warnings to review reasons.
+                if "BBOX_INVALID" in warnings:
+                    reasons.append(RR_SUSPICIOUS_BBOX)
+                if any(w for w in warnings if w not in ("BBOX_INVALID", "CROP_GATED_SMALL", "CROP_GATED_RATIO")):
+                    reasons.append(RR_HEURISTIC_WARNING)
+
+                card_id = stable_card_id(source_ref, page_id, str(word), bbox_xyxy)
                 cards.append(
                     {
+                        "card_id": card_id,
                         "page_id": page_id,
                         "layout_type": layout_type,
                         "word": word,
-                        "front_image_path": page_image_path,
+                        "bbox_xyxy": bbox_xyxy,
+                        "method": method,
+                        "front_image_path": front,
                         "source_ref": source_ref,
                         "confidence": conf,
                         "needs_review": needs_review,
@@ -136,37 +200,68 @@ class FlashcardBuilder:
                     }
                 )
 
+                # Selective review items for multi_word
+                if reasons:
+                    # pick a stable, primary reason
+                    primary = reasons[0]
+                    review_items.append(
+                        {
+                            "card_id": card_id,
+                            "page_id": page_id,
+                            "source_ref": source_ref,
+                            "text": str(word),
+                            "bbox_xyxy": bbox_xyxy,
+                            "review_reason": primary,
+                            "reason": primary,
+                            "suggested_action": "manual_review",
+                            "front_image_path": front,
+                        }
+                    )
+
             if len(cards) == 0:
+                card_id = stable_card_id(source_ref, page_id, "", None)
                 review_items.append(
                     {
+                        "card_id": card_id,
                         "page_id": page_id,
                         "source_ref": source_ref,
+                        "text": "",
+                        "bbox_xyxy": None,
                         "word_candidates": [],
-                        "reason": "ocr_empty",
+                        "review_reason": RR_OCR_EMPTY,
+                        "reason": RR_OCR_EMPTY,
                         "suggested_action": "manual_enter_word_or_fix_ocr",
                     }
                 )
             return cards, review_items
 
         # unknown
+        unknown_card_id = stable_card_id(source_ref, page_id, "UNKNOWN", None)
         cards.append(
             {
+                "card_id": unknown_card_id,
                 "page_id": page_id,
                 "layout_type": layout_type,
                 "word": "UNKNOWN",
+                "bbox_xyxy": None,
+                "method": "page",
                 "front_image_path": page_image_path,
                 "source_ref": source_ref,
                 "confidence": 0.0,
                 "needs_review": True,
-                "reasons": ["layout_uncertain"],
+                "reasons": [RR_LAYOUT_UNCERTAIN],
             }
         )
         review_items.append(
             {
+                "card_id": unknown_card_id,
                 "page_id": page_id,
                 "source_ref": source_ref,
+                "text": "UNKNOWN",
+                "bbox_xyxy": None,
                 "word_candidates": [t.get("text") for t in clean.get("tokens", []) if t.get("text")],
-                "reason": "layout_uncertain",
+                "review_reason": RR_LAYOUT_UNCERTAIN,
+                "reason": RR_LAYOUT_UNCERTAIN,
                 "suggested_action": "manual_review",
             }
         )
