@@ -8,6 +8,8 @@ from .config import load_config
 from .job import create_job_dirs, init_job_outputs, new_job_id, snapshot_input
 from .pipeline import EnginePipeline, RunOptions
 from .utils import load_json
+from .exporter import export_csv
+from .review import apply_review_feedback
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,6 +35,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate = sub.add_parser("validate", help="Validate Output Contract + referenced file paths")
     validate.add_argument("--job-dir", required=True, help="Job directory (workspace/jobs/<job_id>)")
+
+    export = sub.add_parser("export", help="Export flashcards from a completed job")
+    export.add_argument("--job-dir", required=True, help="Job directory (workspace/jobs/<job_id>)")
+    export.add_argument("--format", required=True, choices=["csv"], help="Export format")
+    export.add_argument("--out", required=True, help="Output file path")
+    export.add_argument("--include-review", action="store_true", help="Include cards still in review")
+
+    ar = sub.add_parser("apply-review", help="Apply human review feedback to a job")
+    ar.add_argument("--job-dir", required=True, help="Job directory (workspace/jobs/<job_id>)")
+    ar.add_argument("--feedback", required=True, help="Path to review_feedback.json")
 
     return p
 
@@ -228,6 +240,28 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export(args: argparse.Namespace) -> int:
+    if args.format != "csv":
+        raise SystemExit(2)
+    try:
+        stats = export_csv(job_dir=args.job_dir, out_path=args.out, include_review=bool(args.include_review))
+        print(f"exported={stats.cards_exported} skipped_review={stats.cards_skipped_review} skipped_missing_image={stats.cards_skipped_missing_image}")
+        return 0
+    except Exception as e:
+        print(f"export_failed: {e}")
+        return 1
+
+
+def cmd_apply_review(args: argparse.Namespace) -> int:
+    try:
+        stats = apply_review_feedback(job_dir=args.job_dir, feedback_path=args.feedback)
+        print(f"feedback_items={stats.feedback_items} applied={stats.applied} skipped_unknown_card={stats.skipped_unknown_card} skipped_already_applied={stats.skipped_already_applied}")
+        return 0
+    except Exception as e:
+        print(f"apply_review_failed: {e}")
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -237,6 +271,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "validate":
         return cmd_validate(args)
+
+    if args.command == "export":
+        return cmd_export(args)
+
+    if args.command == "apply-review":
+        return cmd_apply_review(args)
 
     raise SystemExit(2)
 

@@ -32,6 +32,7 @@ python -m flashcard_engine.cli run \
   --lang en \
   --workspace .\workspace \
   --source "smoke_no_ocr" \
+  --min-confidence 0.99 \
   --segmenter off \
   --use-mocked-ocr .\samples\smoke_no_ocr\stage\ocr
 ```
@@ -50,9 +51,39 @@ Then validate:
 python -m flashcard_engine.cli validate --job-dir .\workspace\jobs\<job_id>
 ```
 
+## End-to-end example (v0.3)
+
+This run uses `--min-confidence 0.99` to force review items (`LOW_CONFIDENCE`), then applies a deterministic feedback file and exports CSV.
+
+```powershell
+python -m flashcard_engine.cli apply-review \
+  --job-dir .\workspace\jobs\<job_id> \
+  --feedback .\samples\smoke_no_ocr\review_feedback.example.json
+
+python -m flashcard_engine.cli export \
+  --job-dir .\workspace\jobs\<job_id> \
+  --format csv \
+  --out .\workspace\smoke_no_ocr.csv
+```
+
 Expected:
 - `metrics.json` has `multiword_tokens = 5` and `multiword_crops_written = 5` (default config)
 - `review_queue.json` is usually empty (unless you lower confidences or break bboxes)
+
+CSV expected shape (default export excludes rejected/review):
+
+- 1 header + 4 rows
+- token order preserved: `token_0000`, `token_0001`, `token_0002`, `token_0004`
+
+Example (paths/sha suffixes may differ if you change crop naming rules):
+
+```csv
+front_text,back_text,front_image_path,source_ref,card_id,review_reason
+alpha,,pages/crops/page_001/token_0000_alpha_*.png,pages/page_000.png,ab7e194355c5a24f69e3af2906fc2e673a513933,
+beta,,pages/crops/page_001/token_0001_beta_*.png,pages/page_000.png,1daf32f023b902aa77e910afefe24973e6d6130f,
+gamma,,pages/crops/page_001/token_0002_gamma_*.png,pages/page_000.png,10fc9906c94ab8937e7fb30069ed31505e44c707,
+epsilon,,pages/crops/page_001/token_0004_epsilon_*.png,pages/page_000.png,67cb74167c1978379d678935c63088429535fcb2,
+```
 
 ## Expected outputs
 

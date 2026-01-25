@@ -1,4 +1,4 @@
-# Output Contract (v0.2)
+# Output Contract (v0.3)
 
 이 문서는 `flashcard_engine` 실행 결과가 **항상 생성해야 하는 파일**과 그 스키마(주요 필드)를 정의합니다.
 
@@ -39,6 +39,7 @@ workspace/jobs/<job_id>/pages/crops/page_<page:03d>/token_<i:04d>_<slug>.png
     {
       "card_id": "sha1hex",
       "page_id": "page_003",
+      "source_page_id": "page_003",
       "layout_type": "single_word|multi_word|unknown",
       "word": "example",
       "bbox_xyxy": [x0, y0, x1, y1],
@@ -47,6 +48,9 @@ workspace/jobs/<job_id>/pages/crops/page_<page:03d>/token_<i:04d>_<slug>.png
       "source_ref": "book.pdf#page=3",
       "confidence": 0.73,
       "needs_review": false,
+      "status": "active|review|rejected",
+      "created_at": "2026-01-25T00:00:00+00:00",
+      "updated_at": "2026-01-25T00:00:00+00:00",
       "reasons": ["LOW_CONFIDENCE", "CROP_FAILED"]
     }
   ]
@@ -62,6 +66,12 @@ workspace/jobs/<job_id>/pages/crops/page_<page:03d>/token_<i:04d>_<slug>.png
   - `bbox_crop`: OCR bbox 기반 크롭
   - `segmenter`: 세그먼터(FastSAM/MobileSAM 등) 기반 크롭
 - `front_image_path`: job 디렉토리 기준 상대경로.
+- `status`:
+  - `active`: export 대상
+  - `review`: 사람 검토 필요 (기본 export에서 제외)
+  - `rejected`: 폐기 (export 제외)
+- `created_at` / `updated_at`: 카드 생성/업데이트 시각 (ISO8601)
+- `source_page_id`: 원본 페이지 id (기본적으로 `page_id`와 동일)
 
 ## review_queue.json
 
@@ -107,7 +117,6 @@ workspace/jobs/<job_id>/pages/crops/page_<page:03d>/token_<i:04d>_<slug>.png
 - `cards_total`
 - `review_items_total` (호환성) / `review_items`
 - `multiword_tokens`, `multiword_crops_written`
-- `multiword_tokens`, `multiword_crops_written`
 - `multiword_crop_failures`, `multiword_crops_gated_small`, `multiword_crops_gated_ratio`
 - `deduped_tokens`
 - `segment_success_count`, `segment_fail_count`
@@ -122,3 +131,9 @@ workspace/jobs/<job_id>/pages/crops/page_<page:03d>/token_<i:04d>_<slug>.png
 ```json
 {"page_id":"page_003","stage":"bbox_crop","message":"token_0012: ..."}
 ```
+
+## Export rules (v0.3)
+
+- `export --format csv`는 기본적으로 `needs_review == false` AND `status != rejected` 카드만 내보냅니다.
+- `--include-review`를 지정하면 `review` 상태 카드도 포함할 수 있습니다.
+- 이미지가 누락된 경우 해당 카드는 skip하고 `errors.jsonl`에 경고를 기록합니다.

@@ -44,6 +44,28 @@ python -m flashcard_engine.cli run \
 python -m flashcard_engine.cli run --input .\samples\images --type images --lang en --workspace .\workspace --source "MyDeck"
 ```
 
+## Typical workflow (v0.3)
+
+```text
+run -> validate -> (review) -> apply-review -> export
+```
+
+Example:
+
+```powershell
+python -m flashcard_engine.cli run --input .\samples\images --type images --lang en --workspace .\workspace --source "MyDeck"
+
+python -m flashcard_engine.cli validate --job-dir .\workspace\jobs\<job_id>
+
+# (optional) apply human review actions
+python -m flashcard_engine.cli apply-review --job-dir .\workspace\jobs\<job_id> --feedback .\review_feedback.json
+
+# export only non-review cards by default
+python -m flashcard_engine.cli export --job-dir .\workspace\jobs\<job_id> --format csv --out .\deck.csv
+```
+
+주의: low-confidence/review 상태의 카드는 export 전에 검토하는 것을 권장합니다.
+
 ## Mocked OCR (for smoke/CI)
 `--use-mocked-ocr <dir>`를 지정하면, 각 페이지에 대해 아래 파일 중 하나가 **존재하고 정상 파싱되는 경우** 해당 페이지는 실제 OCR/cleaner를 건너뛰고 mocked cleaned OCR을 사용합니다.
 

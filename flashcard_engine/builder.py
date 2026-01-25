@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .utils import clamp, stable_card_id
+from .utils import clamp, stable_card_id, utc_now_iso
 
 
 # Review reason enums (stable strings)
@@ -51,10 +51,12 @@ class FlashcardBuilder:
             token = _pick_representative_token(clean)
             if not token:
                 card_id = stable_card_id(source_ref, page_id, "UNKNOWN", None)
+                now = utc_now_iso()
                 cards.append(
                     {
                         "card_id": card_id,
                         "page_id": page_id,
+                        "source_page_id": page_id,
                         "layout_type": layout_type,
                         "word": "UNKNOWN",
                         "bbox_xyxy": None,
@@ -63,6 +65,9 @@ class FlashcardBuilder:
                         "source_ref": source_ref,
                         "confidence": 0.0,
                         "needs_review": True,
+                        "status": "review",
+                        "created_at": now,
+                        "updated_at": now,
                         "reasons": [RR_OCR_EMPTY],
                     }
                 )
@@ -105,11 +110,14 @@ class FlashcardBuilder:
                 reasons.append(RR_LOW_CONFIDENCE)
 
             card_id = stable_card_id(source_ref, page_id, str(word), bbox_xyxy)
+            now = utc_now_iso()
+            status = "review" if needs_review else "active"
 
             cards.append(
                 {
                     "card_id": card_id,
                     "page_id": page_id,
+                    "source_page_id": page_id,
                     "layout_type": layout_type,
                     "word": word,
                     "bbox_xyxy": bbox_xyxy,
@@ -118,6 +126,9 @@ class FlashcardBuilder:
                     "source_ref": source_ref,
                     "confidence": conf,
                     "needs_review": needs_review,
+                    "status": status,
+                    "created_at": now,
+                    "updated_at": now,
                     "reasons": reasons,
                 }
             )
@@ -184,10 +195,16 @@ class FlashcardBuilder:
                     reasons.append(RR_HEURISTIC_WARNING)
 
                 card_id = stable_card_id(source_ref, page_id, str(word), bbox_xyxy)
+
+                # v0.3: lifecycle metadata
+                needs_review = bool(reasons)
+                now = utc_now_iso()
+                status = "review" if needs_review else "active"
                 cards.append(
                     {
                         "card_id": card_id,
                         "page_id": page_id,
+                        "source_page_id": page_id,
                         "layout_type": layout_type,
                         "word": word,
                         "bbox_xyxy": bbox_xyxy,
@@ -196,6 +213,9 @@ class FlashcardBuilder:
                         "source_ref": source_ref,
                         "confidence": conf,
                         "needs_review": needs_review,
+                        "status": status,
+                        "created_at": now,
+                        "updated_at": now,
                         "reasons": reasons,
                     }
                 )
@@ -237,10 +257,12 @@ class FlashcardBuilder:
 
         # unknown
         unknown_card_id = stable_card_id(source_ref, page_id, "UNKNOWN", None)
+        now = utc_now_iso()
         cards.append(
             {
                 "card_id": unknown_card_id,
                 "page_id": page_id,
+                "source_page_id": page_id,
                 "layout_type": layout_type,
                 "word": "UNKNOWN",
                 "bbox_xyxy": None,
@@ -249,6 +271,9 @@ class FlashcardBuilder:
                 "source_ref": source_ref,
                 "confidence": 0.0,
                 "needs_review": True,
+                "status": "review",
+                "created_at": now,
+                "updated_at": now,
                 "reasons": [RR_LAYOUT_UNCERTAIN],
             }
         )

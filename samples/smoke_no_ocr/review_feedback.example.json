@@ -1,0 +1,23 @@
+[
+  {
+    "card_id": "ab7e194355c5a24f69e3af2906fc2e673a513933",
+    "action": "edit",
+    "edited_text": "alpha"
+  },
+  {
+    "card_id": "1daf32f023b902aa77e910afefe24973e6d6130f",
+    "action": "approve"
+  },
+  {
+    "card_id": "10fc9906c94ab8937e7fb30069ed31505e44c707",
+    "action": "approve"
+  },
+  {
+    "card_id": "fb54ad140a38a805ed3f7df83f15c0616f4e33b2",
+    "action": "reject"
+  },
+  {
+    "card_id": "67cb74167c1978379d678935c63088429535fcb2",
+    "action": "approve"
+  }
+]
