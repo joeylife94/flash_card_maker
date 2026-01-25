@@ -61,13 +61,20 @@ def apply_review_feedback(*, job_dir: str | Path, feedback_path: str | Path) -> 
         if isinstance(it, dict) and it.get("card_id"):
             review_by_id[str(it["card_id"])] = dict(it)
 
-    feedback = load_json(feedback_path)
-    if not isinstance(feedback, list):
-        raise ValueError("review_feedback.json must be a list")
+    feedback_obj = load_json(feedback_path)
+    if isinstance(feedback_obj, list):
+        feedback_items = feedback_obj
+    elif isinstance(feedback_obj, dict):
+        items = feedback_obj.get("items")
+        if not isinstance(items, list):
+            raise ValueError("review_feedback.json object must contain list field: items")
+        feedback_items = items
+    else:
+        raise ValueError("review_feedback.json must be a list or an object with items")
 
-    stats = ApplyReviewStats(feedback_items=len(feedback))
+    stats = ApplyReviewStats(feedback_items=len(feedback_items))
 
-    for entry in feedback:
+    for entry in feedback_items:
         if not isinstance(entry, dict):
             continue
         card_id = str(entry.get("card_id") or "")

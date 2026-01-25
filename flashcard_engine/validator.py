@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -153,3 +154,59 @@ def validate_job_dir(job_dir: str | Path) -> tuple[bool, dict[str, Any]]:
 
     ok = not errors
     return ok, summary
+
+
+def validate_apkg(job_dir: str | Path, apkg_path: str | Path) -> tuple[bool, dict[str, Any]]:
+    """Validate an Anki .apkg file.
+
+    Rules:
+    - File exists and is a valid zip
+    - Contains collection.anki2
+    - Media file count >= number of active cards with existing images in job_dir
+
+    This is optional and does not alter Output Contract.
+    """
+
+    job_dir = Path(job_dir)
+    apkg_path = Path(apkg_path)
+
+    errors: list[str] = []
+
+    if not apkg_path.exists() or not apkg_path.is_file():
+        errors.append(f"apkg_missing: {apkg_path}")
+        return False, {"errors": errors}
+
+    # Expected media count based on job_dir result.json
+    expected_media = 0
+    try:
+        result = load_json(job_dir / "result.json")
+        cards = result.get("cards", []) if isinstance(result, dict) else []
+        for c in cards:
+            if not isinstance(c, dict):
+                continue
+            if str(c.get("status") or "") != "active":
+                continue
+            rel = str(c.get("front_image_path") or "").strip()
+            if not rel:
+                continue
+            if (job_dir / rel).exists():
+                expected_media += 1
+    except Exception as e:
+        errors.append(f"apkg_expected_media_failed: {e}")
+
+    try:
+        with zipfile.ZipFile(apkg_path, "r") as z:
+            names = set(z.namelist())
+            if "collection.anki2" not in names:
+                errors.append("apkg_missing_collection.anki2")
+            # genanki packs media as numbered files plus a 'media' mapping file
+            media_count = sum(1 for n in names if n.isdigit())
+            if media_count < expected_media:
+                errors.append(f"apkg_media_too_few: media_count={media_count} expected_min={expected_media}")
+    except zipfile.BadZipFile:
+        errors.append("apkg_invalid_zip")
+    except Exception as e:
+        errors.append(f"apkg_validate_failed: {e}")
+
+    ok = not errors
+    return ok, {"expected_media": expected_media, "errors": errors}

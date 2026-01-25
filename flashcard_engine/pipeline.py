@@ -190,6 +190,10 @@ class EnginePipeline:
                 # v0.2: for multi_word pages, create token-level crops from OCR bboxes.
                 if layout.get("layout_type") == "multi_word":
                     tokens = list(clean.get("tokens", []))
+                    # v0.4.1: set deterministic per-page ordering index on tokens.
+                    for i, t in enumerate(tokens):
+                        if isinstance(t, dict) and "token_index" not in t:
+                            t["token_index"] = i
                     new_tokens, crop_stats = crop_multiword_tokens_for_page(
                         paths=self.paths,
                         page_index=page.page_index,

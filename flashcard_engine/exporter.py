@@ -1,18 +1,12 @@
 from __future__ import annotations
 
 import csv
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
 from .job import JobPaths, record_error
 from .utils import load_json
-
-
-_TOKEN_RE = re.compile(r"token_(\d{4})_")
-
-
 @dataclass
 class ExportStats:
     cards_seen: int = 0
@@ -20,35 +14,12 @@ class ExportStats:
     cards_skipped_review: int = 0
     cards_skipped_missing_image: int = 0
     cards_invalid: int = 0
-
-
-def _token_index_from_path(front_image_path: str | None) -> int:
-    if not front_image_path:
-        return 10**9
-    m = _TOKEN_RE.search(front_image_path)
-    if not m:
-        return 10**9
-    try:
-        return int(m.group(1))
-    except Exception:
-        return 10**9
-
-
-def _page_sort_key(page_id: str) -> int:
-    # page_001 -> 1, else stable fallback
-    try:
-        if page_id.startswith("page_"):
-            return int(page_id.split("_")[-1])
-    except Exception:
-        pass
-    return 10**9
-
-
 def _normalize_card(card: dict[str, Any]) -> dict[str, Any]:
     # v0.3: tolerate older jobs missing new fields.
     out = dict(card)
     out.setdefault("status", "active" if not out.get("needs_review") else "review")
     out.setdefault("source_page_id", out.get("page_id"))
+    out.setdefault("token_index", 0)
     out.setdefault("created_at", None)
     out.setdefault("updated_at", None)
     return out
@@ -105,13 +76,9 @@ def export_csv(
             continue
         normalized.append(_normalize_card(c))
 
-    # Stable ordering: page_id then token order (best-effort)
-    normalized.sort(
-        key=lambda c: (
-            _page_sort_key(str(c.get("page_id", ""))),
-            _token_index_from_path(str(c.get("front_image_path") or "")),
-        )
-    )
+    # v0.4.1 deterministic ordering: source_page_id ASC, token_index ASC
+    # (No path parsing for ordering.)
+    normalized.sort(key=lambda c: (str(c.get("source_page_id") or ""), int(c.get("token_index") or 0)))
 
     rows: list[dict[str, str]] = []
     for c in normalized:

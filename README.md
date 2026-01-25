@@ -14,7 +14,7 @@ MVP v0.1: 로컬에서 PDF/이미지 입력을 받아 Flashcard 제작에 필요
 자세한 스키마/필드 설명: [docs/output_contract.md](docs/output_contract.md)
 
 ## Install
-권장: Python 3.10+
+권장: Python 3.11–3.12
 
 필수(최소 실행):
 - `pip install pillow pymupdf`
@@ -24,6 +24,9 @@ OCR(PaddleOCR) 사용 시:
 - `paddlepaddle` 설치는 OS/환경에 따라 다릅니다. (CPU 버전 권장)
 
 세그먼터(FastSAM/MobileSAM)는 옵션이며 설치되지 않아도 **Fail-soft** 로 동작합니다.
+
+### Environment notes
+- Windows에서 Pillow ABI mismatch가 발생할 수 있습니다 (예: Python 3.12 venv에 cp313 Pillow wheel이 섞인 경우). 이런 경우 `.venv`를 삭제 후 원하는 Python 버전으로 venv를 다시 만들고 `pip install -r requirements.txt`를 다시 실행하세요.
 
 ## Run
 ```powershell
@@ -50,6 +53,12 @@ python -m flashcard_engine.cli run --input .\samples\images --type images --lang
 run -> validate -> apply-review -> export -> validate
 ```
 
+## Typical workflow (v0.4)
+
+```text
+run -> validate -> review-ui (or apply-review) -> export apkg -> validate
+```
+
 Example:
 
 ```powershell
@@ -62,6 +71,14 @@ python -m flashcard_engine.cli apply-review --job-dir .\workspace\jobs\<job_id> 
 
 # export only non-review cards by default
 python -m flashcard_engine.cli export --job-dir .\workspace\jobs\<job_id> --format csv --out .\deck.csv
+
+# v0.4: export as Anki .apkg (approved cards only; images embedded)
+python -m flashcard_engine.cli export \
+  --job-dir .\workspace\jobs\<job_id> \
+  --format apkg \
+  --out .\deck.apkg \
+  --deck-name "MyDeck" \
+  --tags "book,unit1"
 
 # validate again after review/export
 python -m flashcard_engine.cli validate --job-dir .\workspace\jobs\<job_id>
@@ -93,6 +110,9 @@ Output Contract 파일과 `front_image_path` 참조가 모두 존재하는지 �
 
 ```powershell
 python -m flashcard_engine.cli validate --job-dir .\workspace\jobs\<job_id>
+
+# (옵션) APKG 무결성 체크(Zip/collection.anki2/media count)
+python -m flashcard_engine.cli validate --job-dir .\workspace\jobs\<job_id> --apkg .\workspace\smoke_no_ocr.apkg
 ```
 
 ## Deterministic smoke (v0.3, copy/paste)
@@ -140,6 +160,17 @@ python -m flashcard_engine.cli export \
   --format csv \
   --out .\workspace\smoke_no_ocr.csv
 
+# v0.4) generate review UI (static HTML, no server)
+python -m flashcard_engine.cli review-ui --job-dir .\workspace\jobs\<job_id>
+
+# v0.4) export apkg (approved cards only)
+python -m flashcard_engine.cli export \
+  --job-dir .\workspace\jobs\<job_id> \
+  --format apkg \
+  --out .\workspace\smoke_no_ocr.apkg \
+  --deck-name "smoke_no_ocr" \
+  --tags "smoke"
+
 # 5) validate again
 python -m flashcard_engine.cli validate --job-dir .\workspace\jobs\<job_id>
 ```
@@ -149,6 +180,10 @@ python -m flashcard_engine.cli validate --job-dir .\workspace\jobs\<job_id>
 ```powershell
 python .\samples\smoke_no_ocr\check_v03_idempotency.py
 ```
+
+Note:
+- v0.4에서도 CSV export는 그대로 지원됩니다.
+- `review-ui`는 브라우저에서 `review_feedback.json`을 작성(또는 다운로드)하고, 그 JSON을 `apply-review`에 전달하는 UX를 제공합니다.
 
 Expected CSV (stable fields only):
 

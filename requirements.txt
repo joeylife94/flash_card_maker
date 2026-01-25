@@ -1,5 +1,6 @@
 pillow>=10.0.0
 pymupdf>=1.23.0
+genanki==0.13.1
 # Optional (OCR)
 # paddleocr>=2.7.0
 # Optional segmenters (best-effort; install manually if needed)

@@ -57,6 +57,7 @@ class FlashcardBuilder:
                         "card_id": card_id,
                         "page_id": page_id,
                         "source_page_id": page_id,
+                        "token_index": 0,
                         "layout_type": layout_type,
                         "word": "UNKNOWN",
                         "bbox_xyxy": None,
@@ -118,6 +119,7 @@ class FlashcardBuilder:
                     "card_id": card_id,
                     "page_id": page_id,
                     "source_page_id": page_id,
+                    "token_index": 0,
                     "layout_type": layout_type,
                     "word": word,
                     "bbox_xyxy": bbox_xyxy,
@@ -159,6 +161,7 @@ class FlashcardBuilder:
                 word = (t.get("text") or "").strip()
                 if not word:
                     continue
+                token_index = int(t.get("token_index") or 0)
                 raw_conf = float(t.get("confidence", c_default))
                 conf = clamp(raw_conf, cmin, cmax)
 
@@ -205,6 +208,7 @@ class FlashcardBuilder:
                         "card_id": card_id,
                         "page_id": page_id,
                         "source_page_id": page_id,
+                        "token_index": token_index,
                         "layout_type": layout_type,
                         "word": word,
                         "bbox_xyxy": bbox_xyxy,
@@ -235,6 +239,7 @@ class FlashcardBuilder:
                             "reason": primary,
                             "suggested_action": "manual_review",
                             "front_image_path": front,
+                            "token_index": token_index,
                         }
                     )
 
