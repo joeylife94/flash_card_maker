@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ..job import JobPaths, record_error
-from ..utils import load_json
+from ..utils import ensure_job_relative_path, load_json
 @dataclass
 class ApkgExportStats:
     cards_seen: int = 0
@@ -150,13 +150,20 @@ def export_apkg(
     used_media_names: dict[str, Path] = {}
     media_files: list[str] = []
 
+    unsafe_paths: list[str] = []
+
     def add_media(*, card_id: str, rel_path: str) -> str:
-        src_abs = job_dir / rel_path
+        src_abs = ensure_job_relative_path(job_dir, rel_path, field="front_image_path")
         base = Path(rel_path).name
         media_name = base
 
         if media_name in used_media_names and used_media_names[media_name] != src_abs:
             media_name = f"{card_id}_{base}"
+
+        # If this exact media_name already points to the same source file, reuse it
+        # and do not add duplicate media entries.
+        if media_name in used_media_names and used_media_names[media_name] == src_abs:
+            return media_name
 
         dst = media_tmp / media_name
         shutil.copyfile(src_abs, dst)
@@ -178,7 +185,14 @@ def export_apkg(
             record_error(paths, page_id=str(c.get("page_id")), stage="export", message="missing_image_path")
             continue
 
-        img_abs = job_dir / front_image_path
+        try:
+            img_abs = ensure_job_relative_path(job_dir, front_image_path, field="front_image_path")
+        except Exception as e:
+            unsafe_paths.append(
+                f"unsafe_front_image_path card_id={str(c.get('card_id') or '')} path={front_image_path} error={e}"
+            )
+            continue
+
         if not img_abs.exists():
             stats.cards_skipped_missing_image += 1
             record_error(
@@ -190,7 +204,13 @@ def export_apkg(
             continue
 
         card_id = str(c.get("card_id") or "")
-        media_name = add_media(card_id=card_id or "unknown", rel_path=front_image_path)
+        try:
+            media_name = add_media(card_id=card_id or "unknown", rel_path=front_image_path)
+        except Exception as e:
+            unsafe_paths.append(
+                f"unsafe_front_image_path card_id={card_id} path={front_image_path} error={e}"
+            )
+            continue
 
         front_text = str(c.get("word") or "")
         safe_text = html.escape(front_text)
@@ -202,6 +222,11 @@ def export_apkg(
             note.tags = export_tags
         deck.add_note(note)
         stats.cards_exported += 1
+
+    if unsafe_paths:
+        details = "\n".join(unsafe_paths[:20])
+        more = "" if len(unsafe_paths) <= 20 else f"\n...and {len(unsafe_paths) - 20} more"
+        raise RuntimeError(f"Unsafe front_image_path detected; refusing to export.\n{details}{more}")
 
     if stats.cards_exported <= 0:
         raise RuntimeError("No active cards exported (status=active). Did you apply-review approve/edit?")

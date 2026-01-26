@@ -96,6 +96,42 @@ def load_json(path: str | Path) -> Any:
         return json.load(f)
 
 
+def ensure_job_relative_path(job_dir: str | Path, rel_path: str | Path, *, field: str = "path") -> Path:
+    """Validate that rel_path is a safe, job-relative path and return its absolute Path.
+
+    Security rules:
+    - Reject absolute/rooted/drive paths
+    - Reject any '..' path segments
+    - After resolving, the path must remain within job_dir
+    """
+    job_dir_p = Path(job_dir)
+    base = job_dir_p.resolve()
+
+    if isinstance(rel_path, Path):
+        rel_str = str(rel_path)
+    else:
+        rel_str = str(rel_path or "")
+
+    rel_str = rel_str.strip().replace("\\", "/")
+    if not rel_str:
+        raise ValueError(f"unsafe_{field}: empty")
+
+    p = Path(rel_str)
+
+    # Reject absolute paths and drive/UNC paths on Windows.
+    if p.is_absolute() or p.drive:
+        raise ValueError(f"unsafe_{field}: absolute_or_drive_path: {rel_str}")
+
+    parts = [part for part in p.parts if part not in (".", "")]
+    if any(part == ".." for part in parts):
+        raise ValueError(f"unsafe_{field}: parent_traversal: {rel_str}")
+
+    abs_p = (base / p).resolve()
+    if abs_p != base and base not in abs_p.parents:
+        raise ValueError(f"unsafe_{field}: escapes_job_dir: {rel_str}")
+    return abs_p
+
+
 def clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 

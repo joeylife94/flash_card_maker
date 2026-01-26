@@ -17,6 +17,8 @@ RR_CROP_GATED_SMALL = "CROP_GATED_SMALL"
 RR_CROP_GATED_RATIO = "CROP_GATED_RATIO"
 RR_SUSPICIOUS_BBOX = "SUSPICIOUS_BBOX"
 RR_HEURISTIC_WARNING = "HEURISTIC_WARNING"
+RR_PAGE_FALLBACK = "PAGE_FALLBACK"
+RR_BBOX_FALLBACK = "BBOX_FALLBACK"
 
 
 def _pick_representative_token(clean: dict[str, Any]) -> dict[str, Any] | None:
@@ -77,6 +79,8 @@ class FlashcardBuilder:
                         "card_id": card_id,
                         "page_id": page_id,
                         "source_ref": source_ref,
+                        "front_image_path": page_image_path,
+                        "token_index": 0,
                         "text": "",
                         "bbox_xyxy": None,
                         "word_candidates": [],
@@ -98,9 +102,23 @@ class FlashcardBuilder:
 
             if segment and segment.get("status") == "success" and segment.get("crop_path"):
                 front = segment["crop_path"]
-                method = "segmenter"
+                seg_method = str(segment.get("method") or "segmenter")
+                if seg_method == "bbox_fallback":
+                    # Degraded quality: bbox fallback crop.
+                    method = "bbox_fallback"
+                    needs_review = True
+                    reasons.append(RR_BBOX_FALLBACK)
+                else:
+                    method = "segmenter"
             else:
-                reasons.append(RR_SEGMENT_FAILED)
+                # Degraded quality: full page fallback.
+                method = "page_fallback"
+                needs_review = True
+                # Only treat actual segmenter failures as SEGMENT_FAILED.
+                if segment and segment.get("status") == "failed":
+                    reasons.append(RR_SEGMENT_FAILED)
+
+                reasons.append(RR_PAGE_FALLBACK)
 
             if not word:
                 needs_review = True
@@ -135,17 +153,40 @@ class FlashcardBuilder:
                 }
             )
 
-            if needs_review and (RR_SEGMENT_FAILED in reasons or RR_LOW_CONFIDENCE in reasons):
+            if needs_review and (
+                RR_SEGMENT_FAILED in reasons
+                or RR_LOW_CONFIDENCE in reasons
+                or RR_PAGE_FALLBACK in reasons
+                or RR_BBOX_FALLBACK in reasons
+            ):
                 review_items.append(
                     {
                         "card_id": card_id,
                         "page_id": page_id,
                         "source_ref": source_ref,
+                        "front_image_path": front,
+                        "token_index": 0,
                         "text": str(word),
                         "bbox_xyxy": bbox_xyxy,
                         "word_candidates": [t.get("text") for t in clean.get("tokens", []) if t.get("text")],
-                        "review_reason": RR_SEGMENT_FAILED if RR_SEGMENT_FAILED in reasons else RR_LOW_CONFIDENCE,
-                        "reason": RR_SEGMENT_FAILED if RR_SEGMENT_FAILED in reasons else RR_LOW_CONFIDENCE,
+                        "review_reason": (
+                            RR_SEGMENT_FAILED
+                            if RR_SEGMENT_FAILED in reasons
+                            else RR_PAGE_FALLBACK
+                            if RR_PAGE_FALLBACK in reasons
+                            else RR_BBOX_FALLBACK
+                            if RR_BBOX_FALLBACK in reasons
+                            else RR_LOW_CONFIDENCE
+                        ),
+                        "reason": (
+                            RR_SEGMENT_FAILED
+                            if RR_SEGMENT_FAILED in reasons
+                            else RR_PAGE_FALLBACK
+                            if RR_PAGE_FALLBACK in reasons
+                            else RR_BBOX_FALLBACK
+                            if RR_BBOX_FALLBACK in reasons
+                            else RR_LOW_CONFIDENCE
+                        ),
                         "suggested_action": "manual_crop_or_fix_word",
                     }
                 )
@@ -187,6 +228,11 @@ class FlashcardBuilder:
                         reasons.append(RR_CROP_GATED_RATIO)
                     if RR_CROP_GATED_SMALL not in reasons and RR_CROP_GATED_RATIO not in reasons:
                         reasons.append(RR_CROP_FAILED)
+
+                # If no crop was produced (skipped/absent), treat it as a degraded fallback.
+                if not crop_path:
+                    method = "page_fallback"
+                    reasons.append(RR_PAGE_FALLBACK)
 
                 if raw_conf < self.min_confidence:
                     reasons.append(RR_LOW_CONFIDENCE)
@@ -250,6 +296,8 @@ class FlashcardBuilder:
                         "card_id": card_id,
                         "page_id": page_id,
                         "source_ref": source_ref,
+                        "front_image_path": page_image_path,
+                        "token_index": 0,
                         "text": "",
                         "bbox_xyxy": None,
                         "word_candidates": [],
@@ -268,6 +316,7 @@ class FlashcardBuilder:
                 "card_id": unknown_card_id,
                 "page_id": page_id,
                 "source_page_id": page_id,
+                "token_index": 0,
                 "layout_type": layout_type,
                 "word": "UNKNOWN",
                 "bbox_xyxy": None,
@@ -287,6 +336,8 @@ class FlashcardBuilder:
                 "card_id": unknown_card_id,
                 "page_id": page_id,
                 "source_ref": source_ref,
+                "front_image_path": page_image_path,
+                "token_index": 0,
                 "text": "UNKNOWN",
                 "bbox_xyxy": None,
                 "word_candidates": [t.get("text") for t in clean.get("tokens", []) if t.get("text")],

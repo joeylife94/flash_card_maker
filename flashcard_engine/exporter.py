@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .job import JobPaths, record_error
-from .utils import load_json
+from .utils import ensure_job_relative_path, load_json
 @dataclass
 class ExportStats:
     cards_seen: int = 0
@@ -81,6 +81,7 @@ def export_csv(
     normalized.sort(key=lambda c: (str(c.get("source_page_id") or ""), int(c.get("token_index") or 0)))
 
     rows: list[dict[str, str]] = []
+    unsafe_paths: list[str] = []
     for c in normalized:
         stats.cards_seen += 1
 
@@ -95,7 +96,13 @@ def export_csv(
 
         front_image_path = str(c.get("front_image_path") or "")
         if front_image_path:
-            img_abs = job_dir / front_image_path
+            try:
+                img_abs = ensure_job_relative_path(job_dir, front_image_path, field="front_image_path")
+            except Exception as e:
+                unsafe_paths.append(
+                    f"unsafe_front_image_path card_id={str(c.get('card_id') or '')} path={front_image_path} error={e}"
+                )
+                continue
             if not img_abs.exists():
                 stats.cards_skipped_missing_image += 1
                 record_error(paths, page_id=str(c.get("page_id")), stage="export", message=f"missing_image: {front_image_path}")
@@ -104,7 +111,8 @@ def export_csv(
         reasons = c.get("reasons") or []
         review_reason = ""
         if isinstance(reasons, list) and reasons:
-            review_reason = str(reasons[0])
+            # Emit all degradation signals deterministically (do not hide them for active cards).
+            review_reason = "|".join([str(r) for r in reasons if str(r).strip()])
 
         rows.append(
             {
@@ -113,9 +121,14 @@ def export_csv(
                 "front_image_path": front_image_path,
                 "source_ref": str(c.get("source_ref") or ""),
                 "card_id": str(c.get("card_id") or ""),
-                "review_reason": review_reason if needs_review else "",
+                "review_reason": review_reason,
             }
         )
+
+    if unsafe_paths:
+        details = "\n".join(unsafe_paths[:20])
+        more = "" if len(unsafe_paths) <= 20 else f"\n...and {len(unsafe_paths) - 20} more"
+        raise RuntimeError(f"Unsafe front_image_path detected; refusing to export.\n{details}{more}")
 
     if not rows:
         raise RuntimeError("No exportable cards (all skipped or invalid)")

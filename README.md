@@ -13,6 +13,13 @@ MVP v0.1: 로컬에서 PDF/이미지 입력을 받아 Flashcard 제작에 필요
 
 자세한 스키마/필드 설명: [docs/output_contract.md](docs/output_contract.md)
 
+## QA Gate: Hardening & Validation Guarantees
+
+QA Gate(품질 게이트)는 fail-soft 파이프라인이 **조용히 거짓말하지 않도록** 보장하는 규칙/재현 커맨드 모음입니다.
+
+- 체크리스트/보장사항: [docs/qa-gate.md](docs/qa-gate.md)
+- Copy/Paste 재현 커맨드: [docs/qa-gate.md](docs/qa-gate.md) ("QA Gate Repro Commands")
+
 ## Install
 권장: Python 3.11–3.12
 

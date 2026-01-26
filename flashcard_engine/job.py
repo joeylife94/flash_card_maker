@@ -78,6 +78,8 @@ def init_job_outputs(paths: JobPaths) -> None:
         paths.metrics_json,
         {
             "created_at": utc_now_iso(),
+            "finished": False,
+            "completed_at": None,
             "pages_total": 0,
             "pages_processed": 0,
             "cards_total": 0,

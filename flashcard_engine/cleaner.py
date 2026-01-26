@@ -30,6 +30,17 @@ class TextCleaner:
 
         patterns = compile_patterns(list(drop_patterns))
 
+        def _token_sort_key(t: dict[str, Any]) -> tuple:
+            bbox = t.get("bbox_xyxy")
+            text = str(t.get("text") or "")
+            try:
+                if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+                    x0, y0, x1, y1 = (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]))
+                    return (0, y0, x0, y1, x1, text)
+            except Exception:
+                pass
+            return (1, 10**9, 10**9, 10**9, 10**9, text)
+
         cleaned: list[dict[str, Any]] = []
         for t in raw.get("tokens", []):
             text = (t.get("text") or "").strip()
@@ -58,6 +69,9 @@ class TextCleaner:
             if len(cleaned) >= max_tokens:
                 break
 
+        # Canonical ordering to reduce upstream OCR ordering nondeterminism.
+        cleaned.sort(key=_token_sort_key)
+
         deduped_count = 0
         if enable_dedupe and cleaned:
             # Dedupe by exact normalized text; keep highest-confidence instance.
@@ -70,6 +84,9 @@ class TextCleaner:
             deduped = list(best_by_text.values())
             deduped_count = max(0, len(cleaned) - len(deduped))
             cleaned = deduped
+
+            # Re-apply canonical ordering after dedupe.
+            cleaned.sort(key=_token_sort_key)
 
         out = {
             "page_id": page_id,

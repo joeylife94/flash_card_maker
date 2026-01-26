@@ -96,9 +96,34 @@ def cmd_validate(args: argparse.Namespace) -> int:
         apkg_errors = apkg_summary.get("errors") or []
         for m in apkg_errors:
             errors.append(m)
+
+    def categorize_error(msg: str) -> str:
+        s = (msg or "").strip()
+        sl = s.lower()
+        if sl.startswith("apkg_") or "apkg" in sl:
+            return "APKG"
+        if "unsafe" in sl or "path traversal" in sl:
+            return "SECURITY"
+        if "requires needs_review=true" in sl or "segment_failed" in sl:
+            return "LIFECYCLE"
+        if "determin" in sl or "canonical" in sl or ("token_index" in sl and "order" in sl):
+            return "DETERMINISM"
+        return "CONTRACT"
+
     if errors:
+        order = ["CONTRACT", "SECURITY", "DETERMINISM", "APKG", "LIFECYCLE"]
+        buckets: dict[str, list[str]] = {k: [] for k in order}
         for m in errors:
-            print(m)
+            cat = categorize_error(str(m))
+            buckets.setdefault(cat, []).append(str(m))
+        print("ERRORS")
+        for cat in order:
+            msgs = buckets.get(cat) or []
+            if not msgs:
+                continue
+            print(f"[{cat}] ({len(msgs)})")
+            for m in msgs:
+                print(f"- {m}")
         return 1
 
     print("OK")

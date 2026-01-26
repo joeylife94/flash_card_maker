@@ -189,7 +189,25 @@ class EnginePipeline:
 
                 # v0.2: for multi_word pages, create token-level crops from OCR bboxes.
                 if layout.get("layout_type") == "multi_word":
+                    def _canonical_token_sort_key(t: Any) -> tuple:
+                        if not isinstance(t, dict):
+                            return (2, 10**9, 10**9, "")
+                        bbox = t.get("bbox_xyxy")
+                        text = str(t.get("text") or "")
+                        try:
+                            if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+                                x0, y0, x1, y1 = (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]))
+                                return (0, y0, x0, y1, x1, text)
+                        except Exception:
+                            pass
+                        return (1, 10**9, 10**9, 10**9, 10**9, text)
+
                     tokens = list(clean.get("tokens", []))
+                    # Canonical ordering before assigning token_index (determinism).
+                    try:
+                        tokens.sort(key=_canonical_token_sort_key)
+                    except Exception:
+                        pass
                     # v0.4.1: set deterministic per-page ordering index on tokens.
                     for i, t in enumerate(tokens):
                         if isinstance(t, dict) and "token_index" not in t:
