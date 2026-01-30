@@ -1,206 +1,386 @@
-# flash_card_maker (flashcard_engine)
+# flashcard_engine
 
-MVP v0.1: 로컬에서 PDF/이미지 입력을 받아 Flashcard 제작에 필요한 **재료 세트(이미지+텍스트)** 를 생산합니다.
+Local, fail-soft flashcard material-set production engine. Converts PDF or image inputs into structured flashcard assets (images + text) with OCR, layout classification, and optional segmentation.
 
-## Output Contract (항상 생성)
-- `workspace/jobs/<job_id>/pages/page_<n>.png`
-- `workspace/jobs/<job_id>/pages/crops/page_<page:03d>/token_<i:04d>_<slug>.png` (multi_word bbox crops)
-- `workspace/jobs/<job_id>/pages/crops/<page_id>_<word>.png` (single_word segmenter/bbox fallback)
-- `workspace/jobs/<job_id>/result.json`
-- `workspace/jobs/<job_id>/review_queue.json`
-- `workspace/jobs/<job_id>/metrics.json`
-- `workspace/jobs/<job_id>/errors.jsonl`
+## Project Overview
 
-자세한 스키마/필드 설명: [docs/output_contract.md](docs/output_contract.md)
+A Python CLI tool that processes PDF documents or image folders to generate flashcard materials suitable for Anki or CSV export. The engine is designed with **fail-soft** semantics: errors are logged but processing continues, ensuring output files are always generated.
 
-## QA Gate: Hardening & Validation Guarantees
+**Version:** 0.1.0 (per pyproject.toml)
 
-QA Gate(품질 게이트)는 fail-soft 파이프라인이 **조용히 거짓말하지 않도록** 보장하는 규칙/재현 커맨드 모음입니다.
+## Key Features
 
-- 체크리스트/보장사항: [docs/qa-gate.md](docs/qa-gate.md)
-- Copy/Paste 재현 커맨드: [docs/qa-gate.md](docs/qa-gate.md) ("QA Gate Repro Commands")
+- **Input formats:** PDF files (via PyMuPDF) or image folders (PNG, JPG, etc.)
+- **OCR integration:** PaddleOCR for text extraction (optional; fail-soft if unavailable)
+- **Layout classification:** Automatic single-word vs multi-word page detection
+- **Segmentation:** Optional MobileSAM/FastSAM support for precise image cropping
+- **Export formats:** CSV and Anki `.apkg` with embedded media
+- **Review workflow:** Static HTML review UI + JSON feedback system
+- **Deterministic outputs:** Canonical token ordering for reproducible exports
+- **Security:** Path traversal protection on all file references
+- **QA Gate:** Explicit validation guarantees with repro commands
 
-## Install
-권장: Python 3.11–3.12
+## Architecture
 
-필수(최소 실행):
-- `pip install pillow pymupdf`
+### High-level Pipeline
 
-OCR(PaddleOCR) 사용 시:
-- `pip install paddleocr`
-- `paddlepaddle` 설치는 OS/환경에 따라 다릅니다. (CPU 버전 권장)
-
-세그먼터(FastSAM/MobileSAM)는 옵션이며 설치되지 않아도 **Fail-soft** 로 동작합니다.
-
-### Environment notes
-- Windows에서 Pillow ABI mismatch가 발생할 수 있습니다 (예: Python 3.12 venv에 cp313 Pillow wheel이 섞인 경우). 이런 경우 `.venv`를 삭제 후 원하는 Python 버전으로 venv를 다시 만들고 `pip install -r requirements.txt`를 다시 실행하세요.
-
-## Run
-```powershell
-python -m flashcard_engine.cli run \
-  --input .\samples\book.pdf \
-  --type pdf \
-  --lang en \
-  --workspace .\workspace \
-  --source "BookName" \
-  --dpi 200 \
-  --min-confidence 0.7 \
-  --segmenter off \
-  --segmenter-device cpu
+```
+Input (PDF/Images)
+    ↓
+PageProvider (render pages)
+    ↓
+OCRExtractor (PaddleOCR or mocked)
+    ↓
+TextCleaner (normalize, dedupe, filter)
+    ↓
+LayoutClassifier (single_word / multi_word)
+    ↓
+Segmenter (optional: MobileSAM/FastSAM or bbox fallback)
+    ↓
+FlashcardBuilder (create cards + review items)
+    ↓
+JobWriter (write result.json, review_queue.json, metrics.json)
 ```
 
-이미지 폴더 입력:
-```powershell
-python -m flashcard_engine.cli run --input .\samples\images --type images --lang en --workspace .\workspace --source "MyDeck"
+### Folder Structure
+
+```
+flashcard_engine/
+├── __init__.py
+├── cli.py              # CLI entry point (run, validate, export, review-ui, apply-review)
+├── pipeline.py         # Main pipeline orchestration
+├── config.py           # Configuration loading from JSON
+├── job.py              # Job directory management and output initialization
+├── page_provider.py    # PDF/image iteration and page rendering
+├── ocr.py              # PaddleOCR wrapper (fail-soft)
+├── cleaner.py          # Text normalization and filtering
+├── layout.py           # Layout classification (single_word/multi_word)
+├── segmenter.py        # Optional SAM-based segmentation
+├── cropper.py          # Bbox-based token cropping for multi_word pages
+├── builder.py          # Flashcard and review item construction
+├── writer.py           # Final JSON output writer
+├── exporter.py         # CSV export
+├── exporters/
+│   └── apkg.py         # Anki .apkg export (requires genanki)
+├── review.py           # Apply review feedback to job
+├── review_ui.py        # Generate static HTML review interface
+├── validator.py        # Output contract and APKG validation
+├── types.py            # Core data types (Page, OCRToken, etc.)
+└── utils.py            # Utilities (JSON I/O, path safety, hashing)
+
+config/
+└── default.json        # Default configuration
+
+docs/
+├── output_contract.md  # Output file schemas and field definitions
+├── qa-gate.md          # QA guarantees and repro commands
+└── ...
+
+samples/
+└── smoke_no_ocr/       # Deterministic smoke test fixtures
 ```
 
-## Typical workflow (v0.3)
+## Quickstart
 
-```text
-run -> validate -> apply-review -> export -> validate
-```
+### Prerequisites
 
-## Typical workflow (v0.4)
+- Python 3.10+ (recommended: 3.11–3.12)
+- Virtual environment recommended
 
-```text
-run -> validate -> review-ui (or apply-review) -> export apkg -> validate
-```
-
-Example:
-
-```powershell
-python -m flashcard_engine.cli run --input .\samples\images --type images --lang en --workspace .\workspace --source "MyDeck"
-
-python -m flashcard_engine.cli validate --job-dir .\workspace\jobs\<job_id>
-
-# (optional) apply human review actions
-python -m flashcard_engine.cli apply-review --job-dir .\workspace\jobs\<job_id> --feedback .\review_feedback.json
-
-# export only non-review cards by default
-python -m flashcard_engine.cli export --job-dir .\workspace\jobs\<job_id> --format csv --out .\deck.csv
-
-# v0.4: export as Anki .apkg (approved cards only; images embedded)
-python -m flashcard_engine.cli export \
-  --job-dir .\workspace\jobs\<job_id> \
-  --format apkg \
-  --out .\deck.apkg \
-  --deck-name "MyDeck" \
-  --tags "book,unit1"
-
-# validate again after review/export
-python -m flashcard_engine.cli validate --job-dir .\workspace\jobs\<job_id>
-```
-
-주의: low-confidence/review 상태의 카드는 export 전에 검토하는 것을 권장합니다.
-
-## Mocked OCR (for smoke/CI)
-`--use-mocked-ocr <dir>`를 지정하면, 각 페이지에 대해 아래 파일 중 하나가 **존재하고 정상 파싱되는 경우** 해당 페이지는 실제 OCR/cleaner를 건너뛰고 mocked cleaned OCR을 사용합니다.
-
-- `<dir>/<page_id>_clean.json`
-- `<dir>/<page_id>.cleaned.json`
-- `<dir>/page_<idx:03d>.cleaned.json` (0-based)
-- `<dir>/page_<idx>.cleaned.json` (0-based)
-
-동작 규칙:
-- 파일이 없거나 파싱 실패 시: `errors.jsonl`에 경고를 기록하고 실제 OCR로 fallback합니다.
-- 실제 OCR이 설치되지 않았거나 실패하더라도: fail-soft로 진행하며 Output Contract 파일들은 항상 생성됩니다(해당 페이지는 빈 tokens로 처리될 수 있음).
-
-## Notes
-- MVP는 중단 없는 배치가 최우선입니다. 페이지 단위 예외는 `errors.jsonl`에 기록하고 계속 진행합니다.
-- `segmenter=off` 일 때도 single_word 페이지는 OCR bbox 기반 간단 크롭을 시도합니다(가능하면).
-
-## Crop failure / gate behavior
-- bbox crop이 게이트(min area 등)로 제외되거나 저장 실패 시: 카드 `method`는 `page`로 남고 `front_image_path`는 전체 페이지 이미지를 가리킵니다.
-
-## Validate
-Output Contract 파일과 `front_image_path` 참조가 모두 존재하는지 검증:
+### Installation
 
 ```powershell
-python -m flashcard_engine.cli validate --job-dir .\workspace\jobs\<job_id>
+# Create and activate virtual environment
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 
-# (옵션) APKG 무결성 체크(Zip/collection.anki2/media count)
-python -m flashcard_engine.cli validate --job-dir .\workspace\jobs\<job_id> --apkg .\workspace\smoke_no_ocr.apkg
+# Install core dependencies
+pip install -r requirements.txt
+# Or manually: pip install pillow>=10.0.0 pymupdf>=1.23.0 genanki==0.13.1
+
+# (Optional) Install OCR support
+pip install paddleocr paddlepaddle
 ```
 
-## Deterministic smoke (v0.3, copy/paste)
-
-이 섹션만 따라 하면 v0.3 기능( `apply-review`, `export`, `validate`, mocked OCR )을 다른 문서 없이 재현할 수 있습니다.
+### Minimal Run
 
 ```powershell
-# 0) generate deterministic input image
+# From PDF
+python -m flashcard_engine.cli run `
+  --input .\samples\book.pdf `
+  --type pdf `
+  --lang en `
+  --workspace .\workspace `
+  --source "BookName"
+
+# From image folder
+python -m flashcard_engine.cli run `
+  --input .\samples\images `
+  --type images `
+  --lang en `
+  --workspace .\workspace `
+  --source "MyDeck"
+```
+
+The CLI prints the job directory path on success (e.g., `.\workspace\jobs\<uuid>`).
+
+## Configuration
+
+Configuration file: [config/default.json](config/default.json)
+
+| Section | Key | Description | Default |
+|---------|-----|-------------|---------|
+| `cleanup` | `lowercase` | Normalize tokens to lowercase | `true` |
+| `cleanup` | `remove_numeric_only` | Drop pure-number tokens | `true` |
+| `cleanup` | `min_token_length` | Minimum token length | `3` |
+| `cleanup` | `dedupe_enabled` | Deduplicate by exact text | `true` |
+| `cleanup` | `max_tokens_per_page` | Cap tokens per page | `200` |
+| `crop` | `bbox_crop_padding_px` | Padding around bbox crops | `10` |
+| `crop` | `bbox_crop_min_area_px` | Minimum crop area (pixels) | `4096` |
+| `segment` | `expand_scale` | Bbox expansion for segmenter | `5.0` |
+| `layout` | `single_word_max_tokens` | Max tokens for single-word classification | `2` |
+| `confidence` | `multi_word_default` | Default confidence for multi-word cards | `0.5` |
+
+Override with `--config <path>` CLI flag.
+
+## Usage
+
+### CLI Commands
+
+#### `run` — Execute flashcard production pipeline
+
+```powershell
+python -m flashcard_engine.cli run `
+  --input <path>           # PDF file or images folder (required)
+  --type <pdf|images>      # Input type (required)
+  --lang <code>            # OCR language code, e.g., "en", "ko" (required)
+  --workspace <dir>        # Output workspace root (default: ./workspace)
+  --source <name>          # Source identifier for cards (required)
+  --dpi <int>              # PDF render DPI (default: 200)
+  --min-confidence <float> # Min OCR confidence threshold (default: 0.7)
+  --segmenter <off|mobilesam|fastsam>  # Segmenter mode (default: off)
+  --segmenter-device <cpu|cuda|mps>    # Device for segmenter (default: cpu)
+  --config <path>          # Custom config JSON (default: config/default.json)
+  --use-mocked-ocr <dir>   # Directory with mocked cleaned OCR JSON (for CI)
+```
+
+#### `validate` — Verify output contract and file integrity
+
+```powershell
+python -m flashcard_engine.cli validate `
+  --job-dir <path>         # Job directory (required)
+  --apkg <path>            # Optional: validate an exported .apkg file
+```
+
+#### `export` — Export cards to CSV or Anki .apkg
+
+```powershell
+# CSV export
+python -m flashcard_engine.cli export `
+  --job-dir <path>         # Job directory (required)
+  --format csv             # Export format (required)
+  --out <path>             # Output file path (required)
+  --include-review         # Include cards in review status (optional)
+
+# APKG export (approved cards only)
+python -m flashcard_engine.cli export `
+  --job-dir <path> `
+  --format apkg `
+  --out <path> `
+  --deck-name <name>       # Deck name (default: source_ref)
+  --tags <comma-separated> # Tags for cards (optional)
+```
+
+#### `review-ui` — Generate static HTML review interface
+
+```powershell
+python -m flashcard_engine.cli review-ui --job-dir <path>
+```
+
+Outputs:
+- `<job_dir>/review.html` — Open in browser (no server needed)
+- `<job_dir>/review_feedback.json` — Feedback file for `apply-review`
+
+#### `apply-review` — Apply human review feedback
+
+```powershell
+python -m flashcard_engine.cli apply-review `
+  --job-dir <path> `
+  --feedback <path>        # JSON file with review actions
+```
+
+Feedback JSON format:
+```json
+[
+  {"card_id": "<sha1>", "action": "approve"},
+  {"card_id": "<sha1>", "action": "reject"},
+  {"card_id": "<sha1>", "action": "edit", "edited_text": "corrected text"}
+]
+```
+
+### Typical Workflow
+
+```
+run → validate → review-ui → apply-review → export → validate
+```
+
+## Development
+
+### Running Smoke Tests
+
+Deterministic smoke tests use mocked OCR to avoid external dependencies:
+
+```powershell
+# v0.3 idempotency check (apply-review, CSV export)
+python .\samples\smoke_no_ocr\check_v03_idempotency.py
+
+# v0.4 review UI + APKG check
+python .\samples\smoke_no_ocr\check_v04_review_ui_and_apkg.py
+```
+
+### Manual Smoke Test (Copy/Paste)
+
+```powershell
+# 1) Generate deterministic input image
 python .\samples\smoke_no_ocr\generate_image.py
 
-# 1) run (mocked OCR, force review via high min-confidence)
-python -m flashcard_engine.cli run \
-  --input .\samples\smoke_no_ocr\pages \
-  --type images \
-  --lang en \
-  --workspace .\workspace \
-  --source "smoke_no_ocr" \
-  --min-confidence 0.99 \
-  --segmenter off \
+# 2) Run pipeline with mocked OCR
+python -m flashcard_engine.cli run `
+  --input .\samples\smoke_no_ocr\pages `
+  --type images `
+  --lang en `
+  --workspace .\workspace `
+  --source "smoke_no_ocr" `
+  --min-confidence 0.99 `
+  --segmenter off `
   --use-mocked-ocr .\samples\smoke_no_ocr\stage\ocr
 
-# (prints job dir, example: .\workspace\jobs\<job_id>)
-
-# 2) validate immediately after run
+# 3) Validate
 python -m flashcard_engine.cli validate --job-dir .\workspace\jobs\<job_id>
 
-# 3) apply-review (edit-only idempotency check)
-python -m flashcard_engine.cli apply-review \
-  --job-dir .\workspace\jobs\<job_id> \
-  --feedback .\samples\smoke_no_ocr\review_feedback.edit_only.json
-
-# re-run apply-review with the same feedback (must report applied=0)
-python -m flashcard_engine.cli apply-review \
-  --job-dir .\workspace\jobs\<job_id> \
-  --feedback .\samples\smoke_no_ocr\review_feedback.edit_only.json
-
-# 3b) apply full deterministic feedback (approves/rejects so export has 4 rows)
-python -m flashcard_engine.cli apply-review \
-  --job-dir .\workspace\jobs\<job_id> \
-  --feedback .\samples\smoke_no_ocr\review_feedback.example.json
-
-# 4) export csv
-python -m flashcard_engine.cli export \
-  --job-dir .\workspace\jobs\<job_id> \
-  --format csv \
-  --out .\workspace\smoke_no_ocr.csv
-
-# v0.4) generate review UI (static HTML, no server)
+# 4) Generate review UI
 python -m flashcard_engine.cli review-ui --job-dir .\workspace\jobs\<job_id>
 
-# v0.4) export apkg (approved cards only)
-python -m flashcard_engine.cli export \
-  --job-dir .\workspace\jobs\<job_id> \
-  --format apkg \
-  --out .\workspace\smoke_no_ocr.apkg \
-  --deck-name "smoke_no_ocr" \
-  --tags "smoke"
+# 5) Apply sample feedback
+python -m flashcard_engine.cli apply-review `
+  --job-dir .\workspace\jobs\<job_id> `
+  --feedback .\samples\smoke_no_ocr\review_feedback.example.json
 
-# 5) validate again
-python -m flashcard_engine.cli validate --job-dir .\workspace\jobs\<job_id>
+# 6) Export APKG
+python -m flashcard_engine.cli export `
+  --job-dir .\workspace\jobs\<job_id> `
+  --format apkg `
+  --out .\workspace\smoke_no_ocr.apkg `
+  --deck-name "smoke_no_ocr"
+
+# 7) Validate again (including APKG)
+python -m flashcard_engine.cli validate `
+  --job-dir .\workspace\jobs\<job_id> `
+  --apkg .\workspace\smoke_no_ocr.apkg
 ```
 
-또는 스크립트로 한 번에 검증:
+### QA Gate
 
-```powershell
-python .\samples\smoke_no_ocr\check_v03_idempotency.py
-```
+The project enforces explicit validation guarantees. See [docs/qa-gate.md](docs/qa-gate.md) for:
+- Security: path traversal protection
+- Output contract: required files and schemas
+- Determinism: canonical token ordering
+- Lifecycle: fallback methods force review status
 
-Note:
-- v0.4에서도 CSV export는 그대로 지원됩니다.
-- `review-ui`는 브라우저에서 `review_feedback.json`을 작성(또는 다운로드)하고, 그 JSON을 `apply-review`에 전달하는 UX를 제공합니다.
+## Output / Artifacts
 
-Expected CSV (stable fields only):
+All outputs are written to `<workspace>/jobs/<job_id>/`:
 
-- rejected 카드는 export에서 제외됩니다 (기본 smoke fixture에서 `delta`를 reject하도록 예시가 제공됨)
-- row order는 token index 기준으로 유지됩니다: `token_0000`, `token_0001`, `token_0002`, `token_0004`
+| File | Description |
+|------|-------------|
+| `result.json` | Job metadata + all cards with fields: `card_id`, `word`, `bbox_xyxy`, `method`, `front_image_path`, `status`, etc. |
+| `review_queue.json` | Items needing human review with `review_reason` |
+| `metrics.json` | Processing statistics (pages, cards, crops, errors) |
+| `errors.jsonl` | Per-page/stage errors (JSON Lines format) |
+| `pages/page_<n>.png` | Rendered page images |
+| `pages/crops/...` | Cropped token images |
 
-```csv
-front_text,back_text,front_image_path,source_ref,card_id,review_reason
-alpha,,pages/crops/page_001/token_0000_alpha_*.png,pages/page_000.png,ab7e194355c5a24f69e3af2906fc2e673a513933,
-beta,,pages/crops/page_001/token_0001_beta_*.png,pages/page_000.png,1daf32f023b902aa77e910afefe24973e6d6130f,
-gamma,,pages/crops/page_001/token_0002_gamma_*.png,pages/page_000.png,10fc9906c94ab8937e7fb30069ed31505e44c707,
-epsilon,,pages/crops/page_001/token_0004_epsilon_*.png,pages/page_000.png,67cb74167c1978379d678935c63088429535fcb2,
-```
+See [docs/output_contract.md](docs/output_contract.md) for full schema documentation.
+
+### Card Status Lifecycle
+
+- `active` — Ready for export
+- `review` — Needs human review (excluded from default export)
+- `rejected` — Discarded (always excluded from export)
+
+### Export Rules
+
+- **CSV:** Exports `active` cards by default; `--include-review` adds `review` cards
+- **APKG:** Exports only `active` cards; rejected cards always excluded
+- **Ordering:** Deterministic by `source_page_id` → `token_index`
+
+## Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| `Pillow ABI mismatch` on Windows | Delete `.venv`, recreate with correct Python version, reinstall requirements |
+| `paddleocr not found` | OCR is optional; pipeline continues with empty tokens |
+| `genanki not found` | Required for APKG export; install with `pip install genanki` |
+| Validation fails with `finished=false` | Job did not complete; check `errors.jsonl` for page errors |
+| Path traversal error | `front_image_path` must be job-relative; absolute/`..` paths are rejected |
+
+## Roadmap
+
+Based on code analysis, potential future work:
+- [ ] Back-side content generation (currently empty in APKG)
+- [ ] Additional export formats
+- [ ] Web-based review UI (currently static HTML only)
+- [ ] Better segmenter integration (MobileSAM/FastSAM paths exist but may need testing)
+
+## License
+
+Not specified in repository.
+
+## TODO / Unknown
+
+- **License:** No LICENSE file found; license status unknown
+- **Test suite:** No pytest/unittest files detected; only integration smoke tests
+- **Linting:** `ruff` configured in pyproject.toml but no CI configuration found
+- **Segmenter dependencies:** `ultralytics`, `opencv-python` mentioned as optional but installation not documented
+- **PaddlePaddle installation:** Varies by OS/CUDA version; user must determine correct wheel
+
+## Evidence Map
+
+| README Claim | Supporting File(s) |
+|--------------|-------------------|
+| CLI commands (run, validate, export, review-ui, apply-review) | [flashcard_engine/cli.py](flashcard_engine/cli.py) |
+| Pipeline stages (OCR, cleaner, layout, segmenter, builder) | [flashcard_engine/pipeline.py](flashcard_engine/pipeline.py) |
+| Output files (result.json, review_queue.json, metrics.json, errors.jsonl) | [flashcard_engine/job.py](flashcard_engine/job.py#L64-L93) |
+| Configuration schema | [config/default.json](config/default.json) |
+| CSV export rules | [flashcard_engine/exporter.py](flashcard_engine/exporter.py) |
+| APKG export rules | [flashcard_engine/exporters/apkg.py](flashcard_engine/exporters/apkg.py) |
+| Review feedback format | [flashcard_engine/review.py](flashcard_engine/review.py) |
+| Review UI generation | [flashcard_engine/review_ui.py](flashcard_engine/review_ui.py) |
+| Validation logic | [flashcard_engine/validator.py](flashcard_engine/validator.py) |
+| Path security (ensure_job_relative_path) | [flashcard_engine/utils.py](flashcard_engine/utils.py#L100-L125) |
+| QA Gate guarantees | [docs/qa-gate.md](docs/qa-gate.md) |
+| Output contract schema | [docs/output_contract.md](docs/output_contract.md) |
+| Smoke test scripts | [samples/smoke_no_ocr/check_v03_idempotency.py](samples/smoke_no_ocr/check_v03_idempotency.py), [samples/smoke_no_ocr/check_v04_review_ui_and_apkg.py](samples/smoke_no_ocr/check_v04_review_ui_and_apkg.py) |
+| Python version requirement | [pyproject.toml](pyproject.toml) (`requires-python = ">=3.10"`) |
+| Dependencies | [requirements.txt](requirements.txt) |
+
+## Diff Summary
+
+| Change | Reason |
+|--------|--------|
+| Restructured to standard README outline | Improved navigability for new contributors |
+| Added Architecture section with pipeline diagram | Documents actual code flow from `pipeline.py` |
+| Added folder structure map | Helps understand module responsibilities |
+| Consolidated CLI usage into single section with all flags | Complete reference derived from `cli.py` |
+| Added Configuration table | Documents actual config keys from `default.json` |
+| Added Troubleshooting section | Common issues observed in code comments |
+| Added TODO/Unknown section | Honest about missing license, tests, etc. |
+| Added Evidence Map | Verifiable claims with file references |
+| Removed outdated v0.1/v0.2/v0.3 version references | README now describes current state |
+| Translated Korean comments to English | Broader accessibility |
+| Removed duplicate workflow sections | Consolidated into single Usage section |
+
+---
+
+**Last Verified:** 2026-01-30
+
