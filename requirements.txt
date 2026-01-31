@@ -1,8 +1,15 @@
 pillow>=10.0.0
 pymupdf>=1.23.0
 genanki==0.13.1
-# Optional (OCR)
+numpy>=1.24.0
+
+# OCR (EasyOCR - recommended for better compatibility)
+easyocr>=1.7.0
+
+# Segmenters (for picture detection)
+ultralytics>=8.0.0
+opencv-python>=4.8.0
+
+# Optional (PaddleOCR - may have compatibility issues with newer numpy)
 # paddleocr>=2.7.0
-# Optional segmenters (best-effort; install manually if needed)
-# ultralytics>=8.0.0
-# opencv-python>=4.8.0
+# paddlepaddle>=2.6.0
