@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
-from PIL import Image
+import numpy as np
+from PIL import Image, ImageFilter
 
 from .job import JobPaths, record_error
 from .utils import clamp, safe_filename_token, write_json
+
+# Suppress warnings
+warnings.filterwarnings('ignore')
 
 
 def _expand_bbox_xyxy(b: list[int] | tuple[int, int, int, int], scale: float, w: int, h: int) -> tuple[int, int, int, int]:
@@ -32,6 +37,30 @@ class Segmenter:
     device: str  # cpu|cuda|mps
     paths: JobPaths
     segment_cfg: dict[str, Any]
+    
+    def _enhance_crop(self, crop: Image.Image) -> Image.Image:
+        """크롭된 이미지 품질 향상."""
+        try:
+            # 엣지 강조
+            enhanced = crop.filter(ImageFilter.EDGE_ENHANCE)
+            # 선명도 향상
+            enhanced = enhanced.filter(ImageFilter.SHARPEN)
+            return enhanced
+        except Exception:
+            return crop
+    
+    def _smart_crop_with_padding(self, image: Image.Image, bbox: tuple[int, int, int, int], padding: int = 5) -> Image.Image:
+        """패딩을 추가한 스마트 크롭."""
+        w, h = image.size
+        x0, y0, x1, y1 = bbox
+        
+        # 패딩 추가
+        x0 = max(0, x0 - padding)
+        y0 = max(0, y0 - padding)
+        x1 = min(w, x1 + padding)
+        y1 = min(h, y1 + padding)
+        
+        return image.crop((x0, y0, x1, y1))
 
     def run_single_word(self, page_id: str, image: Image.Image, word: str, token_bbox: list[int] | None) -> dict[str, Any]:
         out_path = self.paths.stage_segment_dir / f"{page_id}.json"
@@ -86,16 +115,25 @@ class Segmenter:
                 status = "success"
                 method = model_method
             else:
-                # Fail-soft fallback: still produce a usable crop from bbox.
+                # Fail-soft fallback: produce enhanced crop from bbox
+                crop = self._smart_crop_with_padding(image, seg_bbox, padding=5)
+                crop = self._enhance_crop(crop)
+                crop_abs.parent.mkdir(parents=True, exist_ok=True)
+                crop.save(crop_abs, format="PNG", optimize=True, quality=95)
+                status = "success"
+                method = "bbox_fallback_enhanced"
+        except Exception as e:
+            record_error(self.paths, page_id=page_id, stage="segment", message=str(e))
+            # 최후 폴백: 기본 bbox 크롭
+            try:
                 crop = image.crop(seg_bbox)
                 crop_abs.parent.mkdir(parents=True, exist_ok=True)
                 crop.save(crop_abs, format="PNG")
                 status = "success"
                 method = "bbox_fallback"
-        except Exception as e:
-            record_error(self.paths, page_id=page_id, stage="segment", message=str(e))
-            status = "failed"
-            method = self.mode
+            except Exception:
+                status = "failed"
+                method = self.mode
 
         out = {
             "page_id": page_id,
@@ -118,31 +156,46 @@ class Segmenter:
         mode = self.mode
         if mode == "fastsam":
             try:
-                from ultralytics import FastSAM  # type: ignore
-                from ultralytics.models.fastsam import FastSAMPrompt  # type: ignore
-                import numpy as np
-
-                # Expect user to provide/ensure model weights availability.
+                from ultralytics import FastSAM
+                from ultralytics.models.fastsam import FastSAMPrompt
+                
+                # 모델 로드 (캐싱)
                 model = FastSAM("FastSAM-s.pt")
                 img = np.array(image)
-                results = model(img, device=self.device)
+                
+                # 추론 실행
+                results = model(img, device=self.device, verbose=False, conf=0.4, iou=0.9)
                 prompt = FastSAMPrompt(img, results, device=self.device)
+                
+                # Box prompt
                 masks = prompt.box_prompt(bbox=list(seg_bbox))
+                
                 if masks is None or len(masks) == 0:
                     return "failed", "fastsam"
 
-                # Pick largest mask
-                import numpy as np
-
+                # 가장 큰 마스크 선택
                 areas = [int(np.sum(m)) for m in masks]
                 idx = int(max(range(len(areas)), key=lambda i: areas[i]))
                 mask = masks[idx]
+                
+                # 마스크 후처리: 모폴로지 연산
+                from scipy import ndimage
+                mask = ndimage.binary_closing(mask, iterations=2)
+                mask = ndimage.binary_opening(mask, iterations=1)
 
                 ys, xs = np.where(mask)
                 if len(xs) == 0 or len(ys) == 0:
                     return "failed", "fastsam"
+                    
                 x0, x1 = int(xs.min()), int(xs.max())
                 y0, y1 = int(ys.min()), int(ys.max())
+                
+                # 상하 좌우 5픽셀 패딩
+                h, w = image.size[1], image.size[0]
+                x0 = max(0, x0 - 5)
+                y0 = max(0, y0 - 5)
+                x1 = min(w, x1 + 5)
+                y1 = min(h, y1 + 5)
 
                 # Crop and apply alpha
                 crop = image.crop((x0, y0, x1 + 1, y1 + 1)).convert("RGBA")

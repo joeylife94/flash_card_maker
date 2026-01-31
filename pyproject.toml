@@ -1,9 +1,60 @@
 [project]
 name = "flashcard_engine"
-version = "0.1.0"
-description = "Local, fail-soft flashcard material-set production engine"
+version = "2.0.0"
+description = "Enterprise-grade flashcard material-set production engine with AI-powered quality enhancement"
 requires-python = ">=3.10"
 readme = "README.md"
+authors = [
+    {name = "FlashCard Engine Team"}
+]
+keywords = ["flashcard", "anki", "ocr", "education", "ai", "machine-learning"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Education",
+    "Intended Audience :: Developers",
+    "Topic :: Education",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/flashcard_engine"
+Documentation = "https://flashcard-engine.readthedocs.io"
+Repository = "https://github.com/yourusername/flashcard_engine"
+Issues = "https://github.com/yourusername/flashcard_engine/issues"
 
 [tool.ruff]
 line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "PT"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --cov=flashcard_engine --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["flashcard_engine"]
+omit = ["*/tests/*", "*/examples/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]

@@ -14,7 +14,9 @@
       "^lesson$",
       "^chapter$"
     ],
-    "max_tokens_per_page": 200
+    "max_tokens_per_page": 200,
+    "min_confidence": 0.3,
+    "quality_sort_enabled": false
   },
   "crop": {
     "bbox_crop_padding_px": 10,

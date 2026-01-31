@@ -10,6 +10,19 @@ easyocr>=1.7.0
 ultralytics>=8.0.0
 opencv-python>=4.8.0
 
+# Enhanced features
+tqdm>=4.66.0  # Progress bars
+redis>=5.0.0  # Caching backend
+scipy>=1.11.0  # Image quality assessment
+requests>=2.31.0  # Webhook support
+
+# Development and testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-asyncio>=0.21.0
+ruff>=0.1.0
+mypy>=1.7.0
+
 # Optional (PaddleOCR - may have compatibility issues with newer numpy)
 # paddleocr>=2.7.0
 # paddlepaddle>=2.6.0
