@@ -85,11 +85,14 @@ def export_apkg(
         input_dir=job_dir / "input",
         pages_dir=job_dir / "pages",
         crops_dir=job_dir / "pages" / "crops",
+        items_dir=job_dir / "pages" / "items",
         stage_ocr_dir=job_dir / "stage" / "ocr",
         stage_layout_dir=job_dir / "stage" / "layout",
         stage_segment_dir=job_dir / "stage" / "segment",
+        stage_pair_dir=job_dir / "stage" / "pair",
         result_json=job_dir / "result.json",
         review_json=job_dir / "review_queue.json",
+        result_pairs_json=job_dir / "result_pairs.json",
         metrics_json=job_dir / "metrics.json",
         errors_jsonl=job_dir / "errors.jsonl",
     )
@@ -138,6 +141,24 @@ def export_apkg(
                 "afmt": "{{FrontSide}}<hr id=answer>{{Back}}",
             }
         ],
+        css="""
+.card {
+    font-family: arial;
+    font-size: 20px;
+    text-align: center;
+    color: black;
+    background-color: white;
+}
+img {
+    max-width: 100%;
+    max-height: 400px;
+}
+.answer-text {
+    font-size: 28px;
+    font-weight: bold;
+    margin-top: 10px;
+}
+"""
     )
 
     deck = genanki.Deck(_stable_int_id(f"flashcard_engine:deck:{deck_name}"), deck_name)
@@ -215,9 +236,13 @@ def export_apkg(
         front_text = str(c.get("word") or "")
         safe_text = html.escape(front_text)
 
-        front_html = f'<img src="{html.escape(media_name)}"><br>{safe_text}' if safe_text else f'<img src="{html.escape(media_name)}">'
+        # Front: image only (question)
+        front_html = f'<img src="{html.escape(media_name)}">'
+        
+        # Back: text answer (and optionally text crop image if available)
+        back_html = f'<div class="answer-text">{safe_text}</div>' if safe_text else "(no text)"
 
-        note = genanki.Note(model=model, fields=[front_html, ""])  # back text empty for now
+        note = genanki.Note(model=model, fields=[front_html, back_html])
         if export_tags:
             note.tags = export_tags
         deck.add_note(note)
