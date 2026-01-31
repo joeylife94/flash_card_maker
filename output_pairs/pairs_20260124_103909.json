@@ -1,0 +1,36 @@
+{
+  "total_pairs": 2,
+  "pairs": [
+    {
+      "pair_id": "d3ab6f1440fe",
+      "order_index": 0,
+      "picture_bbox": [
+        888,
+        267,
+        2099,
+        1756
+      ],
+      "text_bbox": [
+        1978,
+        1378,
+        2067,
+        1597
+      ],
+      "text": "8 [Jg 8 ;",
+      "needs_text_input": false
+    },
+    {
+      "pair_id": "80331bcb8b56",
+      "order_index": 1,
+      "picture_bbox": [
+        738,
+        2062,
+        2023,
+        3885
+      ],
+      "text_bbox": null,
+      "text": "",
+      "needs_text_input": true
+    }
+  ]
+}

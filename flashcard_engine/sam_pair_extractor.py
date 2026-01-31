@@ -34,9 +34,17 @@ from .utils import write_json, load_json, utc_now_iso, append_jsonl
 class PairConfig:
     """Configuration for SAM-based pair extraction."""
     # SAM filtering thresholds
-    min_mask_area_ratio: float = 0.02  # Reject masks < 2% of page
-    max_mask_area_ratio: float = 0.85  # Reject masks > 85% of page (background)
-    text_iou_threshold: float = 0.5    # Reject masks with IoU > 0.5 with text
+    min_mask_area_ratio: float = 0.003  # Reject masks < 0.3% of page
+    max_mask_area_ratio: float = 0.15   # Reject masks > 15% of page
+    text_iou_threshold: float = 0.15    # Reject masks with IoU > 0.15 with text
+    
+    # Picture validation thresholds (실제 그림 판별)
+    min_color_variance: float = 500.0   # 색상 분산 (적당히)
+    min_edge_density: float = 0.05      # 엣지 밀도 (핵심: 실제 그림은 0.1 이상)
+    min_aspect_ratio: float = 0.4       # 최소 종횡비
+    max_aspect_ratio: float = 2.5       # 최대 종횡비
+    background_color_threshold: int = 240  # 배경색 판별
+    min_non_background_ratio: float = 0.20  # 비배경 픽셀 비율
     
     # Pairing thresholds
     max_pairing_distance_px: int = 500  # Max distance between picture and text
@@ -48,7 +56,7 @@ class PairConfig:
     min_text_area_px: int = 100     # Discard tiny text boxes
     
     # NMS
-    nms_iou_threshold: float = 0.3  # Suppress overlapping picture bboxes
+    nms_iou_threshold: float = 0.5  # NMS threshold
 
 
 @dataclass
@@ -200,33 +208,37 @@ def non_max_suppression(boxes: list[PictureCandidate], iou_threshold: float) -> 
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TEXT DETECTION (PaddleOCR or fallback)
+# TEXT DETECTION (EasyOCR with fallback)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TextDetector:
-    """Text detection using PaddleOCR with fallback."""
+    """Text detection using EasyOCR with fallback."""
     
     def __init__(self, lang: str = "en"):
+        """Initialize text detector.
+        
+        Args:
+            lang: Language code. Supports 'en', 'ko', 'zh', etc.
+                  Multiple languages can be specified as comma-separated string.
+        """
         self.lang = lang
         self._ocr = None
         self._initialized = False
     
     def _init_ocr(self) -> bool:
-        """Lazy initialization of OCR engine."""
+        """Lazy initialization of OCR engine (EasyOCR)."""
         if self._initialized:
             return self._ocr is not None
         
         self._initialized = True
         try:
-            from paddleocr import PaddleOCR
-            self._ocr = PaddleOCR(
-                use_angle_cls=False,
-                lang=self.lang,
-                show_log=False,
-                use_gpu=False,
-            )
+            import easyocr
+            # Parse language codes (support 'en,ko' format)
+            langs = [l.strip() for l in self.lang.split(',')]
+            self._ocr = easyocr.Reader(langs, gpu=False)
             return True
-        except Exception:
+        except Exception as e:
+            print(f"[TextDetector] EasyOCR initialization failed: {e}")
             return False
     
     def detect(self, image: Image.Image) -> list[TextBlock]:
@@ -236,37 +248,40 @@ class TextDetector:
         
         try:
             img_array = np.array(image.convert("RGB"))
-            result = self._ocr.ocr(img_array, cls=False)
+            result = self._ocr.readtext(img_array)
             
-            if not result or not result[0]:
+            if not result:
                 return []
             
             raw_blocks: list[TextBlock] = []
             
-            for line in result[0]:
-                if not line or len(line) < 2:
+            for item in result:
+                if not item or len(item) < 3:
                     continue
                 
-                box_points = line[0]  # [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
-                text_info = line[1]   # (text, confidence)
+                bbox_points = item[0]  # [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+                text = item[1]         # Text string
+                conf = item[2]         # Confidence
                 
-                if not box_points or len(box_points) < 4:
+                if not bbox_points or len(bbox_points) < 4:
                     continue
                 
                 # Convert polygon to bbox
-                xs = [int(p[0]) for p in box_points]
-                ys = [int(p[1]) for p in box_points]
+                xs = [int(p[0]) for p in bbox_points]
+                ys = [int(p[1]) for p in bbox_points]
                 bbox = BBox(min(xs), min(ys), max(xs), max(ys))
                 
-                text = str(text_info[0]) if text_info else ""
-                conf = float(text_info[1]) if text_info and len(text_info) > 1 else 0.0
-                
-                raw_blocks.append(TextBlock(bbox=bbox, text=text, confidence=conf))
+                raw_blocks.append(TextBlock(
+                    bbox=bbox, 
+                    text=str(text) if text else "", 
+                    confidence=float(conf) if conf else 0.0
+                ))
             
             # Merge vertically adjacent lines into caption blocks
             return self._merge_text_blocks(raw_blocks)
             
-        except Exception:
+        except Exception as e:
+            print(f"[TextDetector] OCR detection failed: {e}")
             return self._fallback_detect(image)
     
     def _merge_text_blocks(self, blocks: list[TextBlock], factor: float = 1.5) -> list[TextBlock]:
@@ -321,9 +336,43 @@ class TextDetector:
         )
     
     def _fallback_detect(self, image: Image.Image) -> list[TextBlock]:
-        """Fallback text detection using simple edge analysis."""
-        # This is a minimal fallback - in production, use EAST or similar
-        return []
+        """Fallback text detection - creates placeholder text blocks based on grid cells.
+        
+        This is used when PaddleOCR is not available. It creates placeholder text
+        blocks in typical caption positions (bottom 30% of each grid cell).
+        """
+        w, h = image.size
+        
+        # Estimate grid based on typical vocabulary card layouts
+        estimated_cols = max(1, min(4, w // 300))
+        estimated_rows = max(1, min(6, h // 300))
+        
+        cell_w = w // estimated_cols
+        cell_h = h // estimated_rows
+        
+        blocks = []
+        for row in range(estimated_rows):
+            for col in range(estimated_cols):
+                # Assume text is at the bottom 30% of each cell
+                x0 = col * cell_w + 10
+                y0 = row * cell_h + int(cell_h * 0.7)  # Bottom 30%
+                x1 = (col + 1) * cell_w - 10
+                y1 = (row + 1) * cell_h - 10
+                
+                if x1 - x0 < 50 or y1 - y0 < 20:
+                    continue
+                
+                bbox = BBox(x0, y0, x1, y1)
+                
+                # Create a placeholder text block
+                # The actual text will need to be filled in via review
+                blocks.append(TextBlock(
+                    bbox=bbox,
+                    text=f"[cell_{row}_{col}]",  # Placeholder
+                    confidence=0.3,  # Low confidence for fallback
+                ))
+        
+        return blocks
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -406,9 +455,18 @@ class PictureDetector:
         text_blocks: list[TextBlock],
         config: PairConfig,
     ) -> list[PictureCandidate]:
-        """Detect picture regions, filtering against text blocks."""
+        """Detect picture regions, filtering against text blocks.
+        
+        실제 "그림"만 추출하기 위한 엄격한 필터링:
+        1. 면적 필터 (너무 작거나 큰 것 제외)
+        2. 텍스트 영역 중복 제외
+        3. 종횡비 필터 (너무 길쭉한 것 제외)
+        4. 색상 다양성 체크 (단색/배경 제외)
+        5. 엣지 밀도 체크 (빈 영역 제외)
+        """
         img_w, img_h = image.size
         page_area = img_w * img_h
+        img_array = np.array(image.convert("RGB"))
         
         # Get raw masks from SAM
         raw_candidates = self._get_sam_masks(image)
@@ -417,37 +475,52 @@ class PictureDetector:
             # Fallback: use contour-based detection
             raw_candidates = self._fallback_detect(image)
         
-        # Apply filtering
+        print(f"[PictureDetector] Raw candidates: {len(raw_candidates)}")
+        
+        # Apply strict filtering
         filtered: list[PictureCandidate] = []
         
-        for candidate in raw_candidates:
+        for idx, candidate in enumerate(raw_candidates):
             bbox = candidate.bbox
-            mask_area = candidate.mask_area or bbox.area
-            area_ratio = mask_area / page_area if page_area > 0 else 0
+            area_ratio = bbox.area / page_area if page_area > 0 else 0
             
-            # Filter 1: Reject too small
+            # Filter 1: Area ratio (너무 작거나 큰 것)
             if area_ratio < config.min_mask_area_ratio:
                 continue
-            
-            # Filter 2: Reject too large (background)
             if area_ratio > config.max_mask_area_ratio:
                 continue
             
-            # Filter 3: Reject if overlaps significantly with text (CRITICAL)
+            # Filter 2: Aspect ratio (종횡비)
+            aspect = bbox.width / bbox.height if bbox.height > 0 else 0
+            if aspect < config.min_aspect_ratio or aspect > config.max_aspect_ratio:
+                continue
+            
+            # Filter 3: Text overlap (텍스트와 겹치는 영역)
             is_text_overlap = False
             for text_block in text_blocks:
                 iou = compute_iou(bbox, text_block.bbox)
                 if iou > config.text_iou_threshold:
                     is_text_overlap = True
                     break
-            
+                # 텍스트 영역 내부에 완전히 포함되는 경우도 제외
+                if self._is_contained(bbox, text_block.bbox, threshold=0.8):
+                    is_text_overlap = True
+                    break
             if is_text_overlap:
+                continue
+            
+            # Filter 4: 실제 그림인지 검증 (색상/엣지 분석)
+            if not self._is_real_picture(img_array, bbox, config):
                 continue
             
             filtered.append(candidate)
         
+        print(f"[PictureDetector] After filtering: {len(filtered)}")
+        
         # Apply NMS to remove overlapping detections
         nms_filtered = non_max_suppression(filtered, config.nms_iou_threshold)
+        
+        print(f"[PictureDetector] After NMS: {len(nms_filtered)}")
         
         # Sort deterministically (top-to-bottom, left-to-right)
         sorted_candidates = sorted(nms_filtered, key=lambda c: canonical_sort_key(c.bbox))
@@ -457,6 +530,75 @@ class PictureDetector:
             candidate.order_index = i
         
         return sorted_candidates
+    
+    def _is_contained(self, inner: BBox, outer: BBox, threshold: float = 0.8) -> bool:
+        """Check if inner bbox is mostly contained within outer bbox."""
+        # Calculate intersection
+        ix0 = max(inner.x0, outer.x0)
+        iy0 = max(inner.y0, outer.y0)
+        ix1 = min(inner.x1, outer.x1)
+        iy1 = min(inner.y1, outer.y1)
+        
+        iw = max(0, ix1 - ix0)
+        ih = max(0, iy1 - iy0)
+        intersection = iw * ih
+        
+        if inner.area == 0:
+            return False
+        
+        return intersection / inner.area > threshold
+    
+    def _is_real_picture(self, img_array: np.ndarray, bbox: BBox, config: PairConfig) -> bool:
+        """실제 그림인지 검증 (단색 배경, 빈 영역 제외).
+        
+        검증 기준:
+        1. 색상 분산 - 단색이 아닌지
+        2. 비배경 픽셀 비율 - 대부분 흰색/배경이 아닌지
+        3. 엣지 밀도 - 내부에 디테일이 있는지
+        """
+        try:
+            # Crop region
+            region = img_array[bbox.y0:bbox.y1, bbox.x0:bbox.x1]
+            if region.size == 0:
+                return False
+            
+            # Check 1: 색상 분산 (Color variance)
+            # 실제 그림은 다양한 색상을 포함
+            gray = np.mean(region, axis=2)  # Convert to grayscale
+            variance = np.var(gray)
+            if variance < config.min_color_variance:
+                return False
+            
+            # Check 2: 비배경 픽셀 비율
+            # 대부분 흰색이면 그림이 아님
+            bg_threshold = config.background_color_threshold
+            is_background = np.all(region > bg_threshold, axis=2)  # Nearly white pixels
+            non_bg_ratio = 1.0 - (np.sum(is_background) / is_background.size)
+            if non_bg_ratio < config.min_non_background_ratio:
+                return False
+            
+            # Check 3: 엣지 밀도 (Edge density)
+            # 실제 그림은 내부에 선/형태가 있음
+            try:
+                import cv2
+                gray_uint8 = gray.astype(np.uint8)
+                edges = cv2.Canny(gray_uint8, 50, 150)
+                edge_density = np.sum(edges > 0) / edges.size
+                if edge_density < config.min_edge_density:
+                    return False
+            except ImportError:
+                # cv2 없으면 간단한 gradient 체크
+                grad_x = np.abs(np.diff(gray, axis=1))
+                grad_y = np.abs(np.diff(gray, axis=0))
+                edge_density = (np.sum(grad_x > 30) + np.sum(grad_y > 30)) / gray.size
+                if edge_density < config.min_edge_density:
+                    return False
+            
+            return True
+            
+        except Exception as e:
+            print(f"[PictureDetector] _is_real_picture error: {e}")
+            return False
     
     def _get_sam_masks(self, image: Image.Image) -> list[PictureCandidate]:
         """Get masks from SAM model."""
@@ -516,7 +658,7 @@ class PictureDetector:
         return []
     
     def _fallback_detect(self, image: Image.Image) -> list[PictureCandidate]:
-        """Fallback detection using contour analysis."""
+        """Fallback detection using contour analysis or grid-based approach."""
         try:
             import cv2
             
@@ -551,8 +693,61 @@ class PictureDetector:
             
             return candidates
             
+        except ImportError:
+            # Fallback to PIL-based simple grid detection
+            return self._fallback_grid_detect(image)
         except Exception:
-            return []
+            return self._fallback_grid_detect(image)
+    
+    def _fallback_grid_detect(self, image: Image.Image) -> list[PictureCandidate]:
+        """Simple grid-based picture detection using PIL only."""
+        w, h = image.size
+        
+        # Assume vocabulary pages have rectangular item blocks
+        # Typical layouts: 2x3, 2x4, 3x3 grids
+        
+        # Analyze image to estimate grid
+        gray = np.array(image.convert("L"), dtype=np.float32)
+        
+        # Find potential horizontal/vertical lines by checking edge density
+        # Simple approach: divide image into potential cells
+        
+        # Estimate based on typical vocabulary card sizes (150-400px per cell)
+        estimated_cols = max(1, min(4, w // 300))
+        estimated_rows = max(1, min(6, h // 300))
+        
+        cell_w = w // estimated_cols
+        cell_h = h // estimated_rows
+        
+        candidates = []
+        for row in range(estimated_rows):
+            for col in range(estimated_cols):
+                x0 = col * cell_w + 10
+                y0 = row * cell_h + 10
+                x1 = min((col + 1) * cell_w - 10, w - 10)
+                y1 = min((row + 1) * cell_h - 10, h - 10)
+                
+                if x1 - x0 < 100 or y1 - y0 < 100:
+                    continue
+                
+                # Check if this region has content (not blank)
+                region = gray[y0:y1, x0:x1]
+                std_dev = np.std(region)
+                
+                # Skip mostly blank regions (low variance)
+                if std_dev < 20:
+                    continue
+                
+                bbox = BBox(x0, y0, x1, y1)
+                area = (x1 - x0) * (y1 - y0)
+                
+                candidates.append(PictureCandidate(
+                    bbox=bbox,
+                    mask_area=area,
+                    confidence=0.5,  # Lower confidence for grid-based detection
+                ))
+        
+        return candidates
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1039,6 +1234,7 @@ def extract_pairs_from_image(
     job_id: str | None = None,
     lang: str = "en",
     device: str = "cpu",
+    config: PairConfig | None = None,
 ) -> dict[str, Any]:
     """Convenience function to extract pairs from a single image."""
     image_path = Path(image_path)
@@ -1056,6 +1252,7 @@ def extract_pairs_from_image(
         workspace=workspace,
         lang=lang,
         device=device,
+        config=config,
     )
     
     return extractor.extract_job(job_id, [(page_id, image)])
@@ -1067,6 +1264,7 @@ def extract_pairs_from_folder(
     job_id: str | None = None,
     lang: str = "en",
     device: str = "cpu",
+    config: PairConfig | None = None,
 ) -> dict[str, Any]:
     """Convenience function to extract pairs from a folder of images."""
     folder_path = Path(folder_path)
@@ -1096,6 +1294,7 @@ def extract_pairs_from_folder(
         workspace=workspace,
         lang=lang,
         device=device,
+        config=config,
     )
     
     return extractor.extract_job(job_id, images)

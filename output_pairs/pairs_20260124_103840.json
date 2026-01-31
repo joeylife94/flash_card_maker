@@ -1,0 +1,274 @@
+{
+  "total_pairs": 18,
+  "pairs": [
+    {
+      "pair_id": "5f85cc838c98",
+      "order_index": 0,
+      "picture_bbox": [
+        776,
+        173,
+        1072,
+        442
+      ],
+      "text_bbox": [
+        635,
+        137,
+        738,
+        437
+      ],
+      "text": "7 3 [ @ 1",
+      "needs_text_input": false
+    },
+    {
+      "pair_id": "b6bca3795497",
+      "order_index": 1,
+      "picture_bbox": [
+        1362,
+        244,
+        1636,
+        483
+      ],
+      "text_bbox": [
+        1233,
+        208,
+        1327,
+        463
+      ],
+      "text": "p 8 1 p 9",
+      "needs_text_input": false
+    },
+    {
+      "pair_id": "297ff0e5df80",
+      "order_index": 2,
+      "picture_bbox": [
+        1913,
+        346,
+        2151,
+        527
+      ],
+      "text_bbox": [
+        1785,
+        300,
+        1876,
+        519
+      ],
+      "text": "9 [e 9 9",
+      "needs_text_input": false
+    },
+    {
+      "pair_id": "e952f684ac73",
+      "order_index": 3,
+      "picture_bbox": [
+        763,
+        691,
+        1007,
+        969
+      ],
+      "text_bbox": [
+        1233,
+        722,
+        1333,
+        1002
+      ],
+      "text": " 8 [ ! 9",
+      "needs_text_input": false
+    },
+    {
+      "pair_id": "b67bce27eb7b",
+      "order_index": 4,
+      "picture_bbox": [
+        1377,
+        761,
+        1649,
+        975
+      ],
+      "text_bbox": [
+        1808,
+        811,
+        1895,
+        1002
+      ],
+      "text": "1 8 [ 1",
+      "needs_text_input": false
+    },
+    {
+      "pair_id": "15dd375a1221",
+      "order_index": 5,
+      "picture_bbox": [
+        1929,
+        823,
+        2186,
+        1036
+      ],
+      "text_bbox": [
+        1817,
+        1361,
+        1911,
+        1531
+      ],
+      "text": "g8 Mg",
+      "needs_text_input": false
+    },
+    {
+      "pair_id": "f72a94de69c1",
+      "order_index": 6,
+      "picture_bbox": [
+        777,
+        1265,
+        1004,
+        1550
+      ],
+      "text_bbox": null,
+      "text": "",
+      "needs_text_input": true
+    },
+    {
+      "pair_id": "ab0cb3e5fae4",
+      "order_index": 7,
+      "picture_bbox": [
+        1370,
+        1291,
+        1642,
+        1575
+      ],
+      "text_bbox": null,
+      "text": "",
+      "needs_text_input": true
+    },
+    {
+      "pair_id": "941f84679db7",
+      "order_index": 8,
+      "picture_bbox": [
+        1953,
+        1313,
+        2212,
+        1606
+      ],
+      "text_bbox": null,
+      "text": "",
+      "needs_text_input": true
+    },
+    {
+      "pair_id": "87749697fe6c",
+      "order_index": 9,
+      "picture_bbox": [
+        785,
+        2154,
+        1023,
+        2404
+      ],
+      "text_bbox": [
+        626,
+        2703,
+        735,
+        3066
+      ],
+      "text": "{ 8 , { f",
+      "needs_text_input": false
+    },
+    {
+      "pair_id": "fcffce3add42",
+      "order_index": 10,
+      "picture_bbox": [
+        1370,
+        2161,
+        1607,
+        2407
+      ],
+      "text_bbox": null,
+      "text": "",
+      "needs_text_input": true
+    },
+    {
+      "pair_id": "edee6bb39baf",
+      "order_index": 11,
+      "picture_bbox": [
+        1905,
+        2175,
+        2182,
+        2364
+      ],
+      "text_bbox": null,
+      "text": "",
+      "needs_text_input": true
+    },
+    {
+      "pair_id": "d5a18d584842",
+      "order_index": 12,
+      "picture_bbox": [
+        1914,
+        2675,
+        2158,
+        2907
+      ],
+      "text_bbox": null,
+      "text": "",
+      "needs_text_input": true
+    },
+    {
+      "pair_id": "122d0f64aeda",
+      "order_index": 13,
+      "picture_bbox": [
+        1369,
+        2721,
+        1599,
+        2919
+      ],
+      "text_bbox": null,
+      "text": "",
+      "needs_text_input": true
+    },
+    {
+      "pair_id": "98230e0c9b39",
+      "order_index": 14,
+      "picture_bbox": [
+        788,
+        2727,
+        1031,
+        3018
+      ],
+      "text_bbox": null,
+      "text": "",
+      "needs_text_input": true
+    },
+    {
+      "pair_id": "765b9f548a83",
+      "order_index": 15,
+      "picture_bbox": [
+        1947,
+        3192,
+        2119,
+        3430
+      ],
+      "text_bbox": null,
+      "text": "",
+      "needs_text_input": true
+    },
+    {
+      "pair_id": "555f72b148e1",
+      "order_index": 16,
+      "picture_bbox": [
+        1402,
+        3279,
+        1604,
+        3471
+      ],
+      "text_bbox": null,
+      "text": "",
+      "needs_text_input": true
+    },
+    {
+      "pair_id": "7c0ae7da5d1c",
+      "order_index": 17,
+      "picture_bbox": [
+        785,
+        3310,
+        1060,
+        3562
+      ],
+      "text_bbox": null,
+      "text": "",
+      "needs_text_input": true
+    }
+  ]
+}

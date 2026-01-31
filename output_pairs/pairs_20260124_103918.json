@@ -1,0 +1,62 @@
+{
+  "total_pairs": 4,
+  "pairs": [
+    {
+      "pair_id": "7ab79dd4b8d6",
+      "order_index": 0,
+      "picture_bbox": [
+        538,
+        278,
+        1126,
+        1215
+      ],
+      "text_bbox": null,
+      "text": "",
+      "needs_text_input": true
+    },
+    {
+      "pair_id": "36edfdae7f5a",
+      "order_index": 1,
+      "picture_bbox": [
+        1190,
+        353,
+        1721,
+        1229
+      ],
+      "text_bbox": null,
+      "text": "",
+      "needs_text_input": true
+    },
+    {
+      "pair_id": "f169dd696bf5",
+      "order_index": 2,
+      "picture_bbox": [
+        1777,
+        413,
+        2282,
+        1268
+      ],
+      "text_bbox": null,
+      "text": "",
+      "needs_text_input": true
+    },
+    {
+      "pair_id": "66c3d011842a",
+      "order_index": 3,
+      "picture_bbox": [
+        689,
+        3346,
+        1095,
+        3681
+      ],
+      "text_bbox": [
+        1305,
+        3326,
+        1398,
+        3581
+      ],
+      "text": "11 [",
+      "needs_text_input": false
+    }
+  ]
+}
