@@ -123,6 +123,10 @@ workspace/jobs/<job_id>/pages/crops/page_<page:03d>/token_<i:04d>_<slug>.png
 - `deduped_tokens`
 - `segment_success_count`, `segment_fail_count`
 - `ocr_empty_count`
+- `debug_panels_enabled` (v0.5+): boolean, whether panel debug was enabled
+- `panels_total` (v0.5+): total panels processed when debug enabled
+- `panels_needing_review` (v0.5+): panels flagged for review
+- `panels_blank` (v0.5+): panels detected as blank/meaningless
 
 ## errors.jsonl
 
@@ -133,6 +137,188 @@ workspace/jobs/<job_id>/pages/crops/page_<page:03d>/token_<i:04d>_<slug>.png
 ```json
 {"page_id":"page_003","stage":"bbox_crop","message":"token_0012: ..."}
 ```
+
+---
+
+## Panel Debug Pack (v0.5+ / EXPERIMENTAL)
+
+Panel mode is **experimental and unstable**. The debug pack provides visibility into panel extraction failures.
+
+### Enabling Panel Debug
+
+```bash
+python -m flashcard_engine.cli run --input ./Images --type images --lang en --source MyBook --debug-panels
+```
+
+### Generated Artifacts
+
+When `--debug-panels` is enabled, the following artifacts are generated:
+
+#### 1. Annotated Page Images
+
+Path: `pages/annotated/page_XXX_panels.png`
+
+- Original page with detected panel bounding boxes drawn
+- Block index labels for each panel
+- Reading order: top → bottom, left → right
+- Color coding: green (active), orange (review), red (rejected), gray (blank)
+
+#### 2. Panel Crop Images
+
+Path: `pages/panels/page_XXX/panel_NNN.png`
+
+- Individual crop images for each detected panel
+- These are the EXACT images used as card fronts
+- Job-relative paths only
+
+#### 3. Panel Diagnostics JSON
+
+Path: `stage/panel/page_XXX.json`
+
+Schema:
+
+```json
+{
+  "page_id": "page_001",
+  "page_index": 0,
+  "image_size": [1200, 1600],
+  "panels_count": 12,
+  "panels_needing_review": 3,
+  "panels_blank": 1,
+  "created_at": "2026-01-31T12:00:00+00:00",
+  "panels": [
+    {
+      "block_index": 0,
+      "bbox_xyxy": [100, 100, 300, 250],
+      "blank_score": 0.15,
+      "entropy": 5.8,
+      "edge_density": 0.045,
+      "ocr_text_raw": "vocabulary",
+      "caption_text": "vocabulary",
+      "reasons": [],
+      "needs_review": false,
+      "status": "active",
+      "crop_path": "pages/panels/page_001/panel_000.png"
+    }
+  ]
+}
+```
+
+### Panel Diagnostic Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `block_index` | int | Reading order index (0-based) |
+| `bbox_xyxy` | [x0,y0,x1,y1] | Absolute pixel coordinates |
+| `blank_score` | float | 0.0 = content-rich, 1.0 = blank |
+| `entropy` | float | Grayscale entropy (higher = more content) |
+| `edge_density` | float | Edge pixel ratio (higher = more edges) |
+| `ocr_text_raw` | string | Raw OCR output |
+| `caption_text` | string | Cleaned caption text |
+| `reasons` | string[] | Failure/warning codes |
+| `needs_review` | bool | Whether human review is needed |
+| `status` | string | active / review / rejected |
+| `crop_path` | string | Job-relative path to crop image |
+
+### Panel Reason Codes
+
+- `BLANK_CROP`: Crop detected as visually blank/meaningless
+- `OCR_EMPTY`: No OCR text extracted
+- `PARTIAL_CROP`: Incomplete panel capture
+- `OVERLAP`: Panel overlaps with others
+- `FALLBACK_USED`: Fallback method was used
+- `BBOX_INVALID`: Invalid bounding box
+- `SMALL_AREA`: Panel area below threshold
+- `LOW_EDGE_DENSITY`: Few structural edges detected
+- `LOW_ENTROPY`: Low information content
+
+### Blank Score Computation
+
+The `blank_score` metric combines two signals:
+
+1. **Grayscale Entropy**: Measures histogram-based information content
+   - Low entropy (< 3.5) indicates uniform/blank regions
+   
+2. **Edge Density**: Measures structural content via gradient magnitude
+   - Low edge density (< 0.02) indicates few visual features
+
+Combined score: `blank_score = 1.0 - (0.6 * norm_entropy + 0.4 * norm_edge)`
+
+Panels with `blank_score > 0.7` are automatically flagged for review.
+
+---
+
+## Learning Data Pipeline (v0.5+)
+
+The system captures training data from human review actions for future model improvement.
+
+### Enabling Learning Data
+
+Learning data capture is **automatic** when `apply-review` is called. No additional flags needed.
+
+### Learning Record Schema
+
+Records are stored in `<job_dir>/learning/training_records.jsonl`:
+
+```json
+{
+  "record_id": "a1b2c3d4e5f6",
+  "card_id": "sha1hex...",
+  "page_id": "page_001",
+  "page_image_path": "pages/page_001.png",
+  "predicted_bbox_xyxy": [100, 100, 300, 250],
+  "predicted_text": "original_word",
+  "predicted_confidence": 0.75,
+  "corrected_bbox_xyxy": null,
+  "corrected_text": "corrected_word",
+  "action": "edit",
+  "failure_reasons": ["LOW_CONFIDENCE"],
+  "layout_type": "multi_word",
+  "method": "bbox_crop",
+  "created_at": "2026-01-31T12:00:00+00:00",
+  "source_ref": "book.pdf#page=1"
+}
+```
+
+### Learning Data Files
+
+| File | Description |
+|------|-------------|
+| `learning/training_records.jsonl` | Append-only training records |
+| `learning/learning_stats.json` | Cumulative statistics |
+| `learning/exports/` | Batch exports for model training |
+
+### Learning Statistics
+
+```json
+{
+  "created_at": "2026-01-31T12:00:00+00:00",
+  "updated_at": "2026-01-31T13:00:00+00:00",
+  "records_written": 150,
+  "approvals": 100,
+  "rejections": 20,
+  "edits": 30,
+  "bbox_corrections": 5,
+  "text_corrections": 25
+}
+```
+
+### Extended Feedback Format (v0.5+)
+
+The feedback JSON now supports bbox corrections:
+
+```json
+{
+  "items": [
+    {"card_id": "...", "action": "approve"},
+    {"card_id": "...", "action": "reject"},
+    {"card_id": "...", "action": "edit", "edited_text": "corrected"},
+    {"card_id": "...", "action": "edit", "edited_text": "new", "corrected_bbox": [110, 120, 310, 260]}
+  ]
+}
+```
+
+---
 
 ## Export rules (CSV)
 
@@ -211,3 +397,223 @@ Legacy (v0.4) list format도 지원:
 - `review -> active`: `apply-review`의 `approve` 또는 `edit`(edit 후 approve)
 - `review -> rejected`: `apply-review`의 `reject`
 - `rejected` 카드는 기본 export에서 항상 제외되며, `review_queue.json`에도 다시 나타나지 않습니다.
+
+---
+
+## Pair Mode (v0.5+ / EXPERIMENTAL)
+
+Pair mode separates vocabulary workbook pages into **picture crops** and **text crops**, with explicit binding between them.
+
+### Enabling Pair Mode
+
+```bash
+python -m flashcard_engine.cli run --input ./Images --type images --lang en --source MyBook --mode pair
+```
+
+### Timeline Job Directory (R4)
+
+Pair mode uses timeline-based job directories by default:
+
+```
+workspace/jobs/YYYY-MM-DD/HH-MM-SS__<shortid>/
+```
+
+Example: `workspace/jobs/2026-01-31/14-30-45__a1b2c3d4/`
+
+Benefits:
+- Chronological sorting by default
+- Clear timestamp for each run
+- Nested structure for daily organization
+
+### Generated Artifacts
+
+#### 1. result_pairs.json
+
+Primary output containing all extracted pairs:
+
+```json
+{
+  "schema_version": "1.0",
+  "job_id": "2026-01-31/14-30-45__a1b2c3d4",
+  "mode": "pair",
+  "created_at": "2026-01-31T14:30:45+00:00",
+  "pairs": [
+    {
+      "pair_id": "abc123def456",
+      "page_id": "page_001",
+      "item_index": 0,
+      "picture_path": "pages/items/page_001/item_000/picture.png",
+      "text_path": "pages/items/page_001/item_000/text.png",
+      "caption_text": "APPLE",
+      "bbox_item_xyxy": [20, 20, 380, 500],
+      "bbox_picture_xyxy": [20, 20, 380, 350],
+      "bbox_text_xyxy": [20, 350, 380, 500],
+      "status": "active",
+      "needs_review": false,
+      "reasons": [],
+      "blank_score_picture": 0.15,
+      "blank_score_text": 0.25,
+      "confidence": 0.85
+    }
+  ],
+  "diagnostics": [...]
+}
+```
+
+#### 2. Picture/Text Crops (R1)
+
+For each item block detected, two separate crops are created:
+
+```
+pages/items/page_XXX/item_NNN/picture.png
+pages/items/page_XXX/item_NNN/text.png
+```
+
+These are the EXACT separated image files for each vocabulary item.
+
+#### 3. Per-Page Diagnostics
+
+Path: `stage/pair/page_XXX.json`
+
+Schema:
+
+```json
+{
+  "page_id": "page_001",
+  "page_index": 0,
+  "image_size": [400, 500],
+  "items_detected": 4,
+  "pairs_extracted": 4,
+  "pairs_needing_review": 1,
+  "grid_detected": true,
+  "grid_rows": 2,
+  "grid_cols": 2,
+  "text_ratio_used": 0.3,
+  "text_position_used": "bottom",
+  "learned_adjustments": ["text_ratio=0.35"],
+  "created_at": "2026-01-31T14:30:45+00:00"
+}
+```
+
+### Pair Fields (R2: Binding/Linking)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pair_id` | string | Stable identifier (sha1-based) |
+| `page_id` | string | Source page identifier |
+| `item_index` | int | Index within page (reading order) |
+| `picture_path` | string | Job-relative path to picture crop |
+| `text_path` | string | Job-relative path to text crop |
+| `caption_text` | string | Extracted text from text region |
+| `bbox_item_xyxy` | [x0,y0,x1,y1] | Full item bounding box |
+| `bbox_picture_xyxy` | [x0,y0,x1,y1] | Picture region bbox |
+| `bbox_text_xyxy` | [x0,y0,x1,y1] | Text region bbox |
+| `status` | string | active / review / rejected |
+| `needs_review` | bool | Whether human review is needed |
+| `reasons` | string[] | Failure/warning codes |
+| `blank_score_picture` | float | 0.0-1.0 picture blankness |
+| `blank_score_text` | float | 0.0-1.0 text region blankness |
+| `confidence` | float | Overall extraction confidence |
+
+### Pair Reason Codes
+
+- `BLANK_PICTURE`: Picture region appears blank
+- `BLANK_TEXT`: Text region appears blank
+- `NO_TEXT_DETECTED`: No text found via OCR
+- `SMALL_ITEM`: Item block below minimum area
+- `UNCERTAIN_SPLIT`: Uncertain picture/text division
+- `OCR_EMPTY`: OCR returned no text
+- `LEARNED_CORRECTION`: Used cached correction
+
+### Self-Improving Learning Loop (R3)
+
+Pair mode includes a workspace-level learning cache that improves across runs.
+
+#### Enabling/Disabling Learning
+
+Learning is **enabled by default**. Disable with:
+
+```bash
+python -m flashcard_engine.cli run --mode pair --no-learning ...
+```
+
+#### Learning Cache Location
+
+```
+workspace/learning/
+├── adaptive_cache.json      # Learned parameters
+├── caption_corrections.json # Text corrections
+└── records/                 # Feedback history
+    └── YYYY-MM-DDTHH-MM-SS__<job_short_id>.jsonl
+```
+
+#### Applying Pair Feedback
+
+```bash
+python -m flashcard_engine.cli apply-pair-feedback \
+  --job-dir workspace/jobs/2026-01-31/14-30-45__a1b2c3d4 \
+  --feedback pair_feedback.json
+```
+
+Feedback format:
+
+```json
+{
+  "items": [
+    {"pair_id": "abc123", "action": "approve"},
+    {"pair_id": "def456", "action": "reject"},
+    {
+      "pair_id": "ghi789",
+      "action": "edit",
+      "edited_caption": "CORRECTED TEXT",
+      "corrected_text_ratio": 0.35,
+      "corrected_text_position": "bottom"
+    }
+  ]
+}
+```
+
+#### Observable Improvement
+
+After applying feedback:
+
+1. **Caption corrections** are cached and reused in future runs
+2. **Text ratio** adjustments are learned per page layout
+3. **Text position** (top/bottom/left/right) can be corrected
+4. **Blank threshold** adapts based on approval patterns
+
+Check learning stats:
+
+```bash
+python -m flashcard_engine.cli learning-stats --workspace ./workspace
+```
+
+Output:
+
+```
+total_records=150
+caption_corrections=45
+cached_parameters=12
+blank_threshold=0.700
+```
+
+### Metrics (Pair Mode)
+
+```json
+{
+  "mode": "pair",
+  "created_at": "2026-01-31T14:30:45+00:00",
+  "pages_total": 10,
+  "pages_processed": 10,
+  "pairs_total": 40,
+  "pairs_needing_review": 5,
+  "pairs_blank_picture": 2,
+  "pairs_blank_text": 3,
+  "pairs_ocr_empty": 4,
+  "items_detected": 40,
+  "learning_enabled": true,
+  "learning_records_total": 100,
+  "learning_caption_corrections": 30,
+  "learning_cached_parameters": 8
+}
+```

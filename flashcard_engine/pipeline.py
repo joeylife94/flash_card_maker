@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any
 
@@ -14,8 +14,11 @@ from .job import JobPaths, record_error
 from .layout import LayoutClassifier
 from .ocr import OCRExtractor
 from .page_provider import PageProvider
+from .panel_debug import PanelDebugPack, PanelDebugConfig
+from .pair_extractor import PairExtractor, PairConfig, LearningCache
+from .sam_pair_extractor import SAMPairExtractor
 from .segmenter import Segmenter
-from .utils import utc_now_iso
+from .utils import utc_now_iso, write_json
 from .writer import JobWriter
 from .utils import load_json
 
@@ -76,6 +79,10 @@ class RunOptions:
     segmenter: str
     segmenter_device: str
     mocked_ocr_dir: str | None = None
+    debug_panels: bool = False
+    mode: str = "flashcard"  # "flashcard" or "pair"
+    learning_enabled: bool = True
+    use_sam: bool = False  # Use SAM-based picture detection (pair mode only)
 
 
 class EnginePipeline:
@@ -105,8 +112,265 @@ class EnginePipeline:
             confidence_cfg=cfg.confidence,
         )
         self.writer = JobWriter(paths=paths)
+        
+        # Panel debug pack (optional)
+        self.panel_debug: PanelDebugPack | None = None
+        if opts.debug_panels:
+            self.panel_debug = PanelDebugPack(paths=paths, config=PanelDebugConfig())
+        
+        # Pair extractor with learning cache (for pair mode)
+        self.pair_extractor: PairExtractor | None = None
+        self.sam_pair_extractor: SAMPairExtractor | None = None
+        self.learning_cache: LearningCache | None = None
+        if opts.mode == "pair":
+            # Initialize learning cache from workspace root
+            workspace_root = paths.job_dir.parent.parent  # workspace/jobs/<job_id> -> workspace
+            if opts.learning_enabled:
+                self.learning_cache = LearningCache(workspace_root)
+            
+            if opts.use_sam:
+                # Use SAM-based extraction
+                self.sam_pair_extractor = SAMPairExtractor(
+                    workspace=workspace_root,
+                    device=opts.segmenter_device,
+                )
+            else:
+                # Use original grid-based extraction
+                self.pair_extractor = PairExtractor(
+                    paths=paths,
+                    config=PairConfig(),
+                    learning_cache=self.learning_cache,
+                )
 
     def run(self, job_id: str) -> None:
+        """Run pipeline in the configured mode."""
+        if self.opts.mode == "pair":
+            self._run_pair_mode(job_id)
+        else:
+            self._run_flashcard_mode(job_id)
+
+    def _run_pair_mode(self, job_id: str) -> None:
+        """Run pair extraction mode - separates picture/text crops."""
+        from .pair_extractor import ItemPair, PagePairDiagnostics
+        
+        # Branch based on SAM vs grid-based extraction
+        if self.sam_pair_extractor is not None:
+            self._run_sam_pair_mode(job_id)
+            return
+        
+        # Original grid-based pair extraction
+        all_pairs: list[dict[str, Any]] = []
+        all_diagnostics: list[dict[str, Any]] = []
+        
+        metrics: dict[str, Any] = {
+            "mode": "pair",
+            "created_at": utc_now_iso(),
+            "pages_total": 0,
+            "pages_processed": 0,
+            "pairs_total": 0,
+            "pairs_needing_review": 0,
+            "pairs_blank_picture": 0,
+            "pairs_blank_text": 0,
+            "pairs_ocr_empty": 0,
+            "items_detected": 0,
+            "learning_enabled": self.opts.learning_enabled,
+        }
+        
+        # Add learning cache stats if available
+        if self.learning_cache:
+            learning_stats = self.learning_cache.get_stats()
+            metrics["learning_records_total"] = learning_stats.get("total_records", 0)
+            metrics["learning_caption_corrections"] = learning_stats.get("caption_corrections", 0)
+            metrics["learning_cached_parameters"] = learning_stats.get("cached_parameters", 0)
+        
+        job_meta = {
+            "job_id": job_id,
+            "mode": "pair",
+            "source": self.opts.source,
+            "input": {"type": self.opts.input_type, "path": self.opts.input_path},
+            "created_at": metrics["created_at"],
+        }
+        
+        assert self.pair_extractor is not None, "pair_extractor should be initialized in pair mode"
+        
+        for page, pil_img in self.page_provider.iter_pages():
+            metrics["pages_total"] += 1
+            try:
+                # Optional: get OCR tokens for caption extraction
+                ocr_tokens = None
+                try:
+                    mocked_clean = _try_load_mocked_clean_ocr(
+                        self.opts.mocked_ocr_dir,
+                        paths=self.paths,
+                        page_id=page.page_id,
+                        page_index=page.page_index,
+                    )
+                    if mocked_clean is not None:
+                        ocr_tokens = mocked_clean.get("tokens", [])
+                    else:
+                        raw = self.ocr.extract(page.page_id, pil_img)
+                        clean = self.cleaner.clean(page.page_id, raw)
+                        ocr_tokens = clean.get("tokens", [])
+                except Exception as e:
+                    record_error(self.paths, page_id=page.page_id, stage="pair_ocr", message=str(e))
+                    ocr_tokens = []
+                
+                # Extract pairs
+                pairs, diagnostics = self.pair_extractor.extract_pairs_from_page(
+                    page_id=page.page_id,
+                    page_index=page.page_index,
+                    page_image=pil_img,
+                    ocr_tokens=ocr_tokens,
+                )
+                
+                # Accumulate metrics
+                metrics["items_detected"] += diagnostics.items_detected
+                metrics["pairs_total"] += len(pairs)
+                metrics["pairs_needing_review"] += sum(1 for p in pairs if p.needs_review)
+                metrics["pairs_blank_picture"] += sum(
+                    1 for p in pairs if "BLANK_PICTURE" in p.reasons
+                )
+                metrics["pairs_blank_text"] += sum(
+                    1 for p in pairs if "BLANK_TEXT" in p.reasons
+                )
+                metrics["pairs_ocr_empty"] += sum(
+                    1 for p in pairs if "OCR_EMPTY" in p.reasons
+                )
+                
+                # Convert to dicts for JSON serialization
+                all_pairs.extend(asdict(p) for p in pairs)
+                all_diagnostics.append(asdict(diagnostics))
+                
+                metrics["pages_processed"] += 1
+                
+            except Exception as e:
+                record_error(self.paths, page_id=page.page_id, stage="pair_page", message=str(e))
+        
+        # Write result_pairs.json
+        result_pairs = {
+            "schema_version": "1.0",
+            "job_id": job_id,
+            "mode": "pair",
+            "created_at": metrics["created_at"],
+            "pairs": all_pairs,
+            "diagnostics": all_diagnostics,
+        }
+        write_json(self.paths.result_pairs_json, result_pairs)
+        
+        # Write review queue (for pairs needing review)
+        review_items = [
+            {
+                "pair_id": p["pair_id"],
+                "page_id": p["page_id"],
+                "picture_path": p["picture_path"],
+                "text_path": p["text_path"],
+                "caption_text": p["caption_text"],
+                "reasons": p["reasons"],
+                "confidence": p["confidence"],
+                "status": p["status"],
+            }
+            for p in all_pairs if p.get("needs_review")
+        ]
+        
+        # Write standard outputs
+        self.writer.write_final(
+            job_meta=job_meta,
+            cards=[],  # No cards in pair mode
+            review_items=review_items,
+            metrics=metrics,
+        )
+
+    def _run_sam_pair_mode(self, job_id: str) -> None:
+        """Run SAM-based pair extraction mode."""
+        assert self.sam_pair_extractor is not None, "sam_pair_extractor must be initialized"
+        
+        from .sam_pair_extractor import PageSummary
+        
+        all_summaries: list[dict[str, Any]] = []
+        
+        metrics: dict[str, Any] = {
+            "mode": "pair_sam",
+            "created_at": utc_now_iso(),
+            "pages_total": 0,
+            "pages_processed": 0,
+            "pairs_total": 0,
+            "pairs_needing_review": 0,
+            "pictures_detected": 0,
+            "text_blocks_detected": 0,
+            "sam_version": "SAM",
+        }
+        
+        job_meta = {
+            "job_id": job_id,
+            "mode": "pair_sam",
+            "source": self.opts.source,
+            "input": {"type": self.opts.input_type, "path": self.opts.input_path},
+            "created_at": metrics["created_at"],
+        }
+        
+        output_dir = self.paths.job_dir / "sam_pairs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        for page, pil_img in self.page_provider.iter_pages():
+            metrics["pages_total"] += 1
+            try:
+                summary = self.sam_pair_extractor.extract_page(
+                    page_id=page.page_id,
+                    page_index=page.page_index,
+                    image=pil_img,
+                    output_dir=output_dir,
+                )
+                
+                # Accumulate metrics
+                metrics["pairs_total"] += summary.pairs_extracted
+                metrics["pairs_needing_review"] += summary.pairs_needing_review
+                metrics["pictures_detected"] += summary.pictures_detected
+                metrics["text_blocks_detected"] += summary.text_blocks_detected
+                
+                all_summaries.append(summary.to_dict())
+                metrics["pages_processed"] += 1
+                
+            except Exception as e:
+                record_error(self.paths, page_id=page.page_id, stage="sam_pair_page", message=str(e))
+        
+        # Write result_pairs.json with SAM format
+        result_pairs = {
+            "schema_version": "2.0-sam",
+            "job_id": job_id,
+            "mode": "pair_sam",
+            "created_at": metrics["created_at"],
+            "pages": all_summaries,
+        }
+        write_json(self.paths.result_pairs_json, result_pairs)
+        
+        # Build review items from summaries
+        review_items = []
+        for page_summary in all_summaries:
+            page_dir = output_dir / f"page_{page_summary['page_index'] + 1:02d}"
+            for pair_data in page_summary.get("pairs", []):
+                if pair_data.get("needs_review"):
+                    pair_index = pair_data.get("order_index", 0) + 1
+                    pair_dir = page_dir / f"pair_{pair_index:03d}"
+                    review_items.append({
+                        "pair_id": pair_data["pair_id"],
+                        "page_id": page_summary["page_id"],
+                        "picture_path": str(pair_dir / "image.png"),
+                        "text_path": str(pair_dir / "text.png"),
+                        "caption_text": pair_data.get("caption_text", ""),
+                        "reasons": pair_data.get("reasons", []),
+                        "confidence": pair_data.get("confidence", 0.0),
+                        "status": "active" if pair_data.get("needs_review") else "inactive",
+                    })
+        
+        # Write standard outputs
+        self.writer.write_final(
+            job_meta=job_meta,
+            cards=[],  # No cards in pair mode
+            review_items=review_items,
+            metrics=metrics,
+        )
+
+    def _run_flashcard_mode(self, job_id: str) -> None:
         cards: list[dict[str, Any]] = []
         review_items: list[dict[str, Any]] = []
 
@@ -129,6 +393,11 @@ class EnginePipeline:
             "multiword_crops_gated_ratio": 0,
             "deduped_tokens": 0,
             "review_items": 0,
+            # Panel debug metrics
+            "debug_panels_enabled": self.opts.debug_panels,
+            "panels_total": 0,
+            "panels_needing_review": 0,
+            "panels_blank": 0,
         }
 
         job_meta = {
@@ -226,6 +495,24 @@ class EnginePipeline:
                     metrics["multiword_crop_failures"] += int(crop_stats.crop_failures)
                     metrics["multiword_crops_gated_small"] += int(crop_stats.crops_gated_small)
                     metrics["multiword_crops_gated_ratio"] += int(crop_stats.crops_gated_ratio)
+
+                # Panel debug pack generation (if enabled)
+                if self.panel_debug is not None:
+                    try:
+                        panel_diags = self.panel_debug.process_page(
+                            page_id=page.page_id,
+                            page_index=page.page_index,
+                            page_image=pil_img,
+                            tokens=clean.get("tokens", []),
+                        )
+                        metrics["panels_total"] += len(panel_diags)
+                        metrics["panels_needing_review"] += sum(1 for d in panel_diags if d.needs_review)
+                        metrics["panels_blank"] += sum(
+                            1 for d in panel_diags 
+                            if d.blank_score > self.panel_debug.config.blank_score_threshold
+                        )
+                    except Exception as e:
+                        record_error(self.paths, page_id=page.page_id, stage="panel_debug", message=str(e))
 
                 segment: dict[str, Any] | None = None
                 if layout.get("layout_type") == "single_word":

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .utils import load_json, utc_now_iso, write_json
+from .learning import capture_learning_data_from_feedback, LearningDataStats
 
 
 @dataclass
@@ -13,6 +14,8 @@ class ApplyReviewStats:
     applied: int = 0
     skipped_unknown_card: int = 0
     skipped_already_applied: int = 0
+    # Learning data stats
+    learning_records_written: int = 0
 
 
 def _normalize_card_for_v03(card: dict[str, Any]) -> dict[str, Any]:
@@ -148,6 +151,18 @@ def apply_review_feedback(*, job_dir: str | Path, feedback_path: str | Path) -> 
             review_by_id.pop(card_id, None)
             stats.applied += 1
             continue
+
+    # Capture learning data from all feedback items (for model training)
+    try:
+        learning_stats = capture_learning_data_from_feedback(
+            job_dir=job_dir,
+            cards_by_id=cards_by_id,
+            feedback_items=feedback_items,
+        )
+        stats.learning_records_written = learning_stats.records_written
+    except Exception:
+        # Fail-soft: learning data capture should not break review workflow
+        pass
 
     # Reassemble stable outputs
     result_out = dict(result) if isinstance(result, dict) else {"job": {}, "cards": []}

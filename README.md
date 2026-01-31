@@ -299,8 +299,215 @@ All outputs are written to `<workspace>/jobs/<job_id>/`:
 | `errors.jsonl` | Per-page/stage errors (JSON Lines format) |
 | `pages/page_<n>.png` | Rendered page images |
 | `pages/crops/...` | Cropped token images |
+| `pages/annotated/...` | Annotated page images (debug-panels only) |
+| `pages/panels/...` | Panel crop images (debug-panels only) |
+| `stage/panel/...` | Panel diagnostics JSON (debug-panels only) |
+| `learning/...` | Learning data for model training |
 
 See [docs/output_contract.md](docs/output_contract.md) for full schema documentation.
+
+---
+
+## Panel Debug Pack (EXPERIMENTAL)
+
+> ⚠️ **WARNING:** Panel mode is **experimental and unstable**. Incorrect or meaningless crops are common. Human review is expected and acceptable.
+
+### What is it?
+
+The Panel Debug Pack provides visibility into WHY panel extraction fails:
+- Annotated page images with detected bounding boxes
+- Individual panel crop images
+- Per-page diagnostics JSON with blank_score metrics
+
+### Enabling Panel Debug
+
+```powershell
+python -m flashcard_engine.cli run `
+  --input .\Images `
+  --type images `
+  --lang en `
+  --workspace .\workspace `
+  --source "MyWorkbook" `
+  --debug-panels
+```
+
+### Generated Debug Artifacts
+
+| Path | Description |
+|------|-------------|
+| `pages/annotated/page_XXX_panels.png` | Page with bboxes + labels drawn |
+| `pages/panels/page_XXX/panel_NNN.png` | Individual panel crops |
+| `stage/panel/page_XXX.json` | Diagnostics: blank_score, reasons, status |
+
+### Blank Score Detection
+
+The system computes a `blank_score` (0.0 = content-rich, 1.0 = blank) using:
+- **Grayscale entropy**: Information content from histogram analysis
+- **Edge density**: Structural content from gradient magnitude
+
+Panels with `blank_score > 0.7` are automatically flagged for review with reason `BLANK_CROP`.
+
+### Human-in-the-Loop Learning
+
+When you run `apply-review`, the system automatically captures training data:
+
+```powershell
+python -m flashcard_engine.cli apply-review `
+  --job-dir .\workspace\jobs\<job_id> `
+  --feedback .\my_feedback.json
+```
+
+Learning records are stored in `<job_dir>/learning/`:
+- `training_records.jsonl` — All review actions with predicted vs corrected data
+- `learning_stats.json` — Cumulative statistics
+- `exports/` — Batch exports for model training
+
+### Running Panel Debug Tests
+
+```powershell
+# Requires real images in ./Images/ folder
+python -m pytest tests/e2e_panel_debug_pack.py -v
+```
+
+The tests will **SKIP** if no real images exist. Synthetic images are NOT acceptable for success justification.
+
+---
+
+## Pair Mode (EXPERIMENTAL)
+
+> ⚠️ **WARNING:** Pair mode is **experimental**. Results may need manual review and correction.
+
+### What is it?
+
+Pair mode separates vocabulary workbook pages into **picture crops** and **text crops**, with explicit machine-readable binding between them. It includes a **self-improving learning loop** that gets better with each feedback round.
+
+### Use Case
+
+Ideal for processing vocabulary workbooks where each item has:
+- A picture/illustration (top portion)
+- A caption/text (bottom portion)
+
+### Enabling Pair Mode
+
+```powershell
+python -m flashcard_engine.cli run `
+  --input .\Images `
+  --type images `
+  --lang en `
+  --workspace .\workspace `
+  --source "VocabularyBook" `
+  --mode pair
+```
+
+### Timeline Job Directory
+
+Pair mode uses timeline-based directories by default:
+
+```
+workspace/jobs/YYYY-MM-DD/HH-MM-SS__<shortid>/
+```
+
+Benefits:
+- Chronological organization
+- Clear timestamp for each run
+- Easy comparison of multiple runs
+
+### Generated Artifacts
+
+| Path | Description |
+|------|-------------|
+| `result_pairs.json` | All extracted pairs with picture/text bindings |
+| `pages/items/page_XXX/item_NNN/picture.png` | Picture-only crops |
+| `pages/items/page_XXX/item_NNN/text.png` | Text-only crops |
+| `stage/pair/page_XXX.json` | Per-page extraction diagnostics |
+
+### result_pairs.json Schema
+
+```json
+{
+  "schema_version": "1.0",
+  "job_id": "2026-01-31/14-30-45__a1b2c3d4",
+  "mode": "pair",
+  "pairs": [
+    {
+      "pair_id": "abc123def456",
+      "page_id": "page_001",
+      "picture_path": "pages/items/page_001/item_000/picture.png",
+      "text_path": "pages/items/page_001/item_000/text.png",
+      "caption_text": "APPLE",
+      "bbox_picture_xyxy": [20, 20, 380, 350],
+      "bbox_text_xyxy": [20, 350, 380, 500],
+      "blank_score_picture": 0.15,
+      "blank_score_text": 0.25,
+      "confidence": 0.85,
+      "status": "active",
+      "needs_review": false,
+      "reasons": []
+    }
+  ]
+}
+```
+
+### Applying Pair Feedback
+
+```powershell
+python -m flashcard_engine.cli apply-pair-feedback `
+  --job-dir .\workspace\jobs\2026-01-31\14-30-45__a1b2c3d4 `
+  --feedback .\pair_feedback.json
+```
+
+Feedback format:
+
+```json
+{
+  "items": [
+    {"pair_id": "abc123", "action": "approve"},
+    {"pair_id": "def456", "action": "reject"},
+    {
+      "pair_id": "ghi789",
+      "action": "edit",
+      "edited_caption": "CORRECTED TEXT",
+      "corrected_text_ratio": 0.35
+    }
+  ]
+}
+```
+
+### Self-Improving Learning Loop
+
+Pair mode learns from your corrections and improves over time:
+
+1. **Caption corrections** are cached and reused
+2. **Text ratio** (picture vs text split) adapts per page layout
+3. **Blank threshold** adjusts based on approval patterns
+
+Check learning statistics:
+
+```powershell
+python -m flashcard_engine.cli learning-stats --workspace .\workspace
+```
+
+Output:
+```
+total_records=150
+caption_corrections=45
+cached_parameters=12
+blank_threshold=0.700
+```
+
+### Disabling Learning
+
+```powershell
+python -m flashcard_engine.cli run --mode pair --no-learning ...
+```
+
+### Running Pair Mode Tests
+
+```powershell
+python -m pytest tests/e2e_pair_mode.py -v
+```
+
+---
 
 ### Card Status Lifecycle
 

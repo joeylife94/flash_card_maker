@@ -12,6 +12,7 @@ from .exporter import export_csv
 from .exporters.apkg import export_apkg
 from .review import apply_review_feedback
 from .review_ui import generate_review_ui
+from .pair_extractor import apply_pair_feedback, LearningCache
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,6 +35,36 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Directory containing mocked cleaned OCR JSON (skips real OCR/cleaner when file exists)",
     )
+    run.add_argument(
+        "--debug-panels",
+        action="store_true",
+        default=False,
+        help="Enable panel debug pack generation (annotated images, panel crops, diagnostics JSON)",
+    )
+    run.add_argument(
+        "--mode",
+        default="flashcard",
+        choices=["flashcard", "pair"],
+        help="Pipeline mode: 'flashcard' (default) or 'pair' for picture/text separation",
+    )
+    run.add_argument(
+        "--sam",
+        action="store_true",
+        default=False,
+        help="Use SAM-based picture detection (pair mode only)",
+    )
+    run.add_argument(
+        "--timeline-dir",
+        action="store_true",
+        default=False,
+        help="Use timeline-based job directory format (YYYY-MM-DD/HH-MM-SS__<shortid>)",
+    )
+    run.add_argument(
+        "--no-learning",
+        action="store_true",
+        default=False,
+        help="Disable learning cache (pair mode only)",
+    )
 
     validate = sub.add_parser("validate", help="Validate Output Contract + referenced file paths")
     validate.add_argument("--job-dir", required=True, help="Job directory (workspace/jobs/<job_id>)")
@@ -54,12 +85,30 @@ def build_parser() -> argparse.ArgumentParser:
     ar.add_argument("--job-dir", required=True, help="Job directory (workspace/jobs/<job_id>)")
     ar.add_argument("--feedback", required=True, help="Path to review_feedback.json")
 
+    # Pair mode feedback command
+    pf = sub.add_parser("apply-pair-feedback", help="Apply human feedback to pair extraction results")
+    pf.add_argument("--job-dir", required=True, help="Job directory (workspace/jobs/<job_id>)")
+    pf.add_argument("--feedback", required=True, help="Path to pair_feedback.json")
+    pf.add_argument("--workspace", default="./workspace", help="Workspace root (for learning cache)")
+    pf.add_argument(
+        "--no-learning",
+        action="store_true",
+        default=False,
+        help="Disable learning cache updates",
+    )
+    
+    # Learning stats command
+    ls = sub.add_parser("learning-stats", help="Show learning cache statistics")
+    ls.add_argument("--workspace", default="./workspace", help="Workspace root")
+
     return p
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    job_id = new_job_id()
-    paths = create_job_dirs(args.workspace, job_id)
+    # Support timeline-based job IDs for pair mode or when explicitly requested
+    use_timeline = getattr(args, 'timeline_dir', False) or getattr(args, 'mode', 'flashcard') == 'pair'
+    job_id = new_job_id(use_timeline=use_timeline)
+    paths = create_job_dirs(args.workspace, job_id, use_timeline=use_timeline)
     init_job_outputs(paths)
     snapshot_input(paths, args.input, args.type)
 
@@ -74,6 +123,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         segmenter=args.segmenter,
         segmenter_device=args.segmenter_device,
         mocked_ocr_dir=args.use_mocked_ocr,
+        debug_panels=getattr(args, 'debug_panels', False),
+        mode=getattr(args, 'mode', 'flashcard'),
+        learning_enabled=not getattr(args, 'no_learning', False),
+        use_sam=getattr(args, 'sam', False),
     )
 
     EnginePipeline(paths=paths, cfg=cfg, opts=opts).run(job_id=job_id)
@@ -177,6 +230,42 @@ def cmd_apply_review(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_apply_pair_feedback(args: argparse.Namespace) -> int:
+    """Apply human feedback to pair extraction results."""
+    try:
+        learning_cache = None
+        if not getattr(args, 'no_learning', False):
+            learning_cache = LearningCache(args.workspace)
+        
+        stats = apply_pair_feedback(
+            job_dir=args.job_dir,
+            feedback_path=args.feedback,
+            learning_cache=learning_cache,
+        )
+        
+        print(f"processed={stats.get('processed', 0)} approved={stats.get('approved', 0)} rejected={stats.get('rejected', 0)} edited={stats.get('edited', 0)} learning_records={stats.get('learning_records', 0)}")
+        return 0
+    except Exception as e:
+        print(f"apply_pair_feedback_failed: {e}")
+        return 1
+
+
+def cmd_learning_stats(args: argparse.Namespace) -> int:
+    """Show learning cache statistics."""
+    try:
+        cache = LearningCache(args.workspace)
+        stats = cache.get_stats()
+        
+        print(f"total_records={stats.get('total_records', 0)}")
+        print(f"caption_corrections={stats.get('caption_corrections', 0)}")
+        print(f"cached_parameters={stats.get('cached_parameters', 0)}")
+        print(f"blank_threshold={stats.get('blank_threshold', 0.7):.3f}")
+        return 0
+    except Exception as e:
+        print(f"learning_stats_failed: {e}")
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -195,6 +284,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "review-ui":
         return cmd_review_ui(args)
+    
+    if args.command == "apply-pair-feedback":
+        return cmd_apply_pair_feedback(args)
+    
+    if args.command == "learning-stats":
+        return cmd_learning_stats(args)
 
     raise SystemExit(2)
 
