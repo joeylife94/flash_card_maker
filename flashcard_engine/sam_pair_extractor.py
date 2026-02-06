@@ -1,7 +1,7 @@
 """SAM-based Pair Extractor - Dynamic picture/text pairing with no grid assumptions.
 
 Architecture:
-1. Text Detection (PaddleOCR) → Find text regions first (ground truth for anti-noise)
+1. Text Detection (Tesseract OCR primary, EasyOCR fallback) → Find text regions first
 2. Picture Detection (SAM) → Find picture masks, filter against text regions
 3. Pairing Engine → Match pictures to nearest text blocks deterministically
 4. Cropping → Output image.png, text.png, meta.json per pair
@@ -53,7 +53,9 @@ class PairConfig:
     
     # Text merging
     line_merge_factor: float = 1.5  # Merge lines if gap < factor * line_height
-    min_text_area_px: int = 100     # Discard tiny text boxes
+    min_text_area_px: int = 300     # Discard tiny text boxes
+    min_text_length: int = 2        # Minimum text length (chars) to be valid
+    min_text_confidence: float = 0.4  # Minimum OCR confidence to keep (Tesseract: 0–1)
     
     # NMS
     nms_iou_threshold: float = 0.5  # NMS threshold
@@ -208,44 +210,134 @@ def non_max_suppression(boxes: list[PictureCandidate], iou_threshold: float) -> 
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TEXT DETECTION (EasyOCR with fallback)
+# TEXT DETECTION (Tesseract → EasyOCR fallback)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TextDetector:
-    """Text detection using EasyOCR with fallback."""
+    """Text detection using Tesseract OCR (primary) with EasyOCR fallback."""
+    
+    # Default Tesseract path on Windows (UB-Mannheim installer)
+    _TESS_WIN_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
     
     def __init__(self, lang: str = "en"):
         """Initialize text detector.
         
         Args:
-            lang: Language code. Supports 'en', 'ko', 'zh', etc.
+            lang: Language code. Supports 'en', 'de', 'ko', etc.
                   Multiple languages can be specified as comma-separated string.
+                  For Tesseract mapping: en→eng, de→deu, ko→kor, etc.
         """
         self.lang = lang
-        self._ocr = None
+        self._ocr_engine: str | None = None  # 'tesseract' | 'easyocr' | None
+        self._ocr = None  # EasyOCR reader (fallback)
         self._initialized = False
     
+    # ── Language code mapping ──────────────────────────────────────────────
+    _TESS_LANG_MAP: dict[str, str] = {
+        "en": "eng", "de": "deu", "ko": "kor", "zh": "chi_sim",
+        "ja": "jpn", "fr": "fra", "es": "spa", "it": "ita",
+        "pt": "por", "ru": "rus", "ar": "ara",
+    }
+    
+    def _tess_lang(self) -> str:
+        """Convert lang codes to Tesseract format (e.g. 'de,en' → 'deu+eng')."""
+        parts = [l.strip() for l in self.lang.split(",")]
+        tess_parts = [self._TESS_LANG_MAP.get(p, p) for p in parts]
+        return "+".join(tess_parts)
+    
     def _init_ocr(self) -> bool:
-        """Lazy initialization of OCR engine (EasyOCR)."""
+        """Lazy initialization — try Tesseract first, then EasyOCR."""
         if self._initialized:
-            return self._ocr is not None
-        
+            return self._ocr_engine is not None
         self._initialized = True
+        
+        # ── Try Tesseract first ────────────────────────────────────────────
+        try:
+            import pytesseract
+            import os
+            if os.path.exists(self._TESS_WIN_PATH):
+                pytesseract.pytesseract.tesseract_cmd = self._TESS_WIN_PATH
+            # Quick sanity check
+            pytesseract.get_languages()
+            self._ocr_engine = "tesseract"
+            print(f"[TextDetector] Using Tesseract OCR (lang={self._tess_lang()})")
+            return True
+        except Exception as e:
+            print(f"[TextDetector] Tesseract unavailable: {e}")
+        
+        # ── Fallback: EasyOCR ──────────────────────────────────────────────
         try:
             import easyocr
-            # Parse language codes (support 'en,ko' format)
-            langs = [l.strip() for l in self.lang.split(',')]
+            langs = [l.strip() for l in self.lang.split(",")]
             self._ocr = easyocr.Reader(langs, gpu=False)
+            self._ocr_engine = "easyocr"
+            print(f"[TextDetector] Using EasyOCR (lang={langs})")
             return True
         except Exception as e:
             print(f"[TextDetector] EasyOCR initialization failed: {e}")
-            return False
+        
+        return False
     
+    # ── Main detection entry point ────────────────────────────────────────
     def detect(self, image: Image.Image) -> list[TextBlock]:
         """Detect text regions in image, return merged text blocks."""
         if not self._init_ocr():
             return self._fallback_detect(image)
         
+        if self._ocr_engine == "tesseract":
+            return self._detect_tesseract(image)
+        else:
+            return self._detect_easyocr(image)
+    
+    # ── Tesseract detection ───────────────────────────────────────────────
+    def _detect_tesseract(self, image: Image.Image) -> list[TextBlock]:
+        """Detect text using Tesseract OCR — returns word-level blocks."""
+        try:
+            import pytesseract
+            pil_img = image.convert("RGB")
+            
+            data = pytesseract.image_to_data(
+                pil_img, lang=self._tess_lang(),
+                output_type=pytesseract.Output.DICT,
+            )
+            
+            raw_blocks: list[TextBlock] = []
+            n = len(data["text"])
+            
+            for i in range(n):
+                text = data["text"][i].strip()
+                conf = int(data["conf"][i])
+                if conf < 0 or not text:
+                    continue
+                
+                x = int(data["left"][i])
+                y = int(data["top"][i])
+                w = int(data["width"][i])
+                h = int(data["height"][i])
+                
+                raw_blocks.append(TextBlock(
+                    bbox=BBox(x, y, x + w, y + h),
+                    text=text,
+                    confidence=conf / 100.0,  # Normalize to 0-1
+                ))
+            
+            # Pre-filter: remove noise
+            filtered = [
+                blk for blk in raw_blocks
+                if blk.confidence >= 0.30
+                and len(blk.text) >= 2
+                and blk.bbox.area >= 200
+            ]
+            
+            return self._merge_text_blocks(filtered)
+            
+        except Exception as e:
+            print(f"[TextDetector] Tesseract detection failed: {e}")
+            return self._detect_easyocr(image) if self._ocr else self._fallback_detect(image)
+    
+    # ── EasyOCR detection (fallback) ──────────────────────────────────────
+    def _detect_easyocr(self, image: Image.Image) -> list[TextBlock]:
+        """Detect text using EasyOCR — fallback engine."""
         try:
             img_array = np.array(image.convert("RGB"))
             result = self._ocr.readtext(img_array)
@@ -259,14 +351,13 @@ class TextDetector:
                 if not item or len(item) < 3:
                     continue
                 
-                bbox_points = item[0]  # [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
-                text = item[1]         # Text string
-                conf = item[2]         # Confidence
+                bbox_points = item[0]
+                text = item[1]
+                conf = item[2]
                 
                 if not bbox_points or len(bbox_points) < 4:
                     continue
                 
-                # Convert polygon to bbox
                 xs = [int(p[0]) for p in bbox_points]
                 ys = [int(p[1]) for p in bbox_points]
                 bbox = BBox(min(xs), min(ys), max(xs), max(ys))
@@ -277,8 +368,15 @@ class TextDetector:
                     confidence=float(conf) if conf else 0.0
                 ))
             
-            # Merge vertically adjacent lines into caption blocks
-            return self._merge_text_blocks(raw_blocks)
+            # Pre-filter garbage
+            filtered = [
+                blk for blk in raw_blocks
+                if blk.confidence >= 0.15
+                and not (len(blk.text.strip()) <= 1 and not blk.text.strip().isalpha())
+                and blk.bbox.area >= 200
+            ]
+            
+            return self._merge_text_blocks(filtered)
             
         except Exception as e:
             print(f"[TextDetector] OCR detection failed: {e}")
@@ -1051,11 +1149,21 @@ class SAMPairExtractor:
         # Step 1: Text Detection (MUST run first for anti-noise filtering)
         text_blocks = self.text_detector.detect(image)
         
-        # Filter tiny text blocks
-        text_blocks = [
-            tb for tb in text_blocks
-            if tb.bbox.area >= self.config.min_text_area_px
-        ]
+        # Filter: area, length, confidence
+        quality_text_blocks: list[TextBlock] = []
+        for tb in text_blocks:
+            if tb.bbox.area < self.config.min_text_area_px:
+                continue
+            txt = tb.text.strip()
+            if len(txt) < self.config.min_text_length:
+                continue
+            if tb.confidence < self.config.min_text_confidence:
+                continue
+            quality_text_blocks.append(tb)
+        
+        text_blocks = quality_text_blocks
+        
+        print(f"[ExtractPage] {page_id}: {len(text_blocks)} quality text blocks")
         
         # Step 2: Picture Detection (filtered against text regions)
         pictures = self.picture_detector.detect(image, text_blocks, self.config)

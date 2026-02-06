@@ -53,7 +53,7 @@ class PairConfig:
     
     # Grid detection
     grid_detection_enabled: bool = True
-    grid_line_threshold: int = 20
+    grid_line_threshold: int = 8
     
     # Learning
     learning_enabled: bool = True
@@ -113,8 +113,11 @@ def _compute_page_hash(image: Image.Image) -> str:
     return hashlib.md5(arr.tobytes(), usedforsecurity=False).hexdigest()
 
 
-def _detect_grid_lines(image: Image.Image, threshold: int = 20) -> tuple[list[int], list[int]]:
+def _detect_grid_lines(image: Image.Image, threshold: int = 8) -> tuple[list[int], list[int]]:
     """Detect horizontal and vertical grid lines using edge detection.
+    
+    Uses adaptive thresholding: tries strict threshold first, then relaxes
+    if too few lines are found.
     
     Returns:
         (horizontal_lines, vertical_lines) - lists of y and x coordinates
@@ -122,21 +125,23 @@ def _detect_grid_lines(image: Image.Image, threshold: int = 20) -> tuple[list[in
     gray = np.array(image.convert("L"), dtype=np.float32)
     h, w = gray.shape
     
-    # Detect horizontal lines (look for rows with many horizontal edges)
-    horizontal_lines = []
-    for y in range(1, h - 1):
-        row_diff = np.abs(gray[y, :] - gray[y - 1, :])
-        if np.mean(row_diff) > threshold:
-            horizontal_lines.append(y)
+    def _find_lines_at_threshold(thresh: int) -> tuple[list[int], list[int]]:
+        # Detect horizontal lines (rows with strong horizontal edges)
+        horizontal_lines = []
+        for y in range(1, h - 1):
+            row_diff = np.abs(gray[y, :] - gray[y - 1, :])
+            if np.mean(row_diff) > thresh:
+                horizontal_lines.append(y)
+        
+        # Detect vertical lines
+        vertical_lines = []
+        for x in range(1, w - 1):
+            col_diff = np.abs(gray[:, x] - gray[:, x - 1])
+            if np.mean(col_diff) > thresh:
+                vertical_lines.append(x)
+        
+        return horizontal_lines, vertical_lines
     
-    # Detect vertical lines
-    vertical_lines = []
-    for x in range(1, w - 1):
-        col_diff = np.abs(gray[:, x] - gray[:, x - 1])
-        if np.mean(col_diff) > threshold:
-            vertical_lines.append(x)
-    
-    # Cluster nearby lines
     def cluster_lines(lines: list[int], min_gap: int = 30) -> list[int]:
         if not lines:
             return []
@@ -149,7 +154,64 @@ def _detect_grid_lines(image: Image.Image, threshold: int = 20) -> tuple[list[in
                 clusters.append([line])
         return [int(np.mean(c)) for c in clusters]
     
-    return cluster_lines(horizontal_lines), cluster_lines(vertical_lines)
+    # Try multiple thresholds: strict → relaxed
+    for thresh in [threshold, max(5, threshold - 3), max(3, threshold // 2)]:
+        h_lines, v_lines = _find_lines_at_threshold(thresh)
+        
+        clustered_h = cluster_lines(h_lines)
+        clustered_v = cluster_lines(v_lines)
+        
+        # If we found at least 2 horizontal + 2 vertical lines, we have a grid
+        if len(clustered_h) >= 2 and len(clustered_v) >= 2:
+            return clustered_h, clustered_v
+    
+    # Final fallback: use projection-based detection
+    return _detect_grid_lines_projection(gray)
+
+
+def _detect_grid_lines_projection(gray: np.ndarray) -> tuple[list[int], list[int]]:
+    """Detect grid lines using projection profiles (more robust for faint lines).
+    
+    Looks at the variance along each row/column — grid lines cause
+    sudden variance drops (uniform color across the line).
+    """
+    h, w = gray.shape
+    
+    # Horizontal line detection: compute row-wise standard deviation
+    row_std = np.array([np.std(gray[y, :]) for y in range(h)])
+    
+    # Grid lines have LOW std (they're uniform across the row)
+    # Find local minima in std that are below median
+    median_std = np.median(row_std)
+    h_candidates = []
+    for y in range(5, h - 5):
+        if row_std[y] < median_std * 0.5:
+            # Check it's a local minimum
+            if row_std[y] <= row_std[y - 2] and row_std[y] <= row_std[y + 2]:
+                h_candidates.append(y)
+    
+    # Vertical line detection
+    col_std = np.array([np.std(gray[:, x]) for x in range(w)])
+    median_col_std = np.median(col_std)
+    v_candidates = []
+    for x in range(5, w - 5):
+        if col_std[x] < median_col_std * 0.5:
+            if col_std[x] <= col_std[x - 2] and col_std[x] <= col_std[x + 2]:
+                v_candidates.append(x)
+    
+    def cluster_lines(lines: list[int], min_gap: int = 30) -> list[int]:
+        if not lines:
+            return []
+        lines = sorted(lines)
+        clusters = [[lines[0]]]
+        for line in lines[1:]:
+            if line - clusters[-1][-1] < min_gap:
+                clusters[-1].append(line)
+            else:
+                clusters.append([line])
+        return [int(np.mean(c)) for c in clusters]
+    
+    return cluster_lines(h_candidates), cluster_lines(v_candidates)
 
 
 def _detect_item_blocks_grid(
@@ -195,46 +257,135 @@ def _detect_item_blocks_contour(
     image: Image.Image,
     config: PairConfig,
 ) -> list[tuple[int, int, int, int]]:
-    """Detect item blocks using contour/connected component analysis."""
+    """Detect item blocks using contour/connected component analysis.
+
+    Improved: uses OpenCV contour detection first, then adaptive edge
+    projection, then common grid layouts as last resort.
+    """
     w, h = image.size
     gray = np.array(image.convert("L"), dtype=np.float32)
-    
-    # Edge detection
+
+    # --- Strategy 1: Try OpenCV contour detection ---
+    try:
+        import cv2
+
+        gray_u8 = gray.astype(np.uint8)
+
+        # Adaptive threshold to find cell boundaries
+        binary = cv2.adaptiveThreshold(
+            gray_u8, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV, 15, 5
+        )
+
+        # Find horizontal and vertical lines
+        h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(40, w // 10), 1))
+        v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(40, h // 10)))
+
+        h_lines_img = cv2.morphologyEx(binary, cv2.MORPH_OPEN, h_kernel)
+        v_lines_img = cv2.morphologyEx(binary, cv2.MORPH_OPEN, v_kernel)
+
+        # Combine lines
+        grid_mask = cv2.add(h_lines_img, v_lines_img)
+
+        # Find contours of cells (inverse of grid lines)
+        grid_inv = cv2.bitwise_not(grid_mask)
+        contours, _ = cv2.findContours(grid_inv, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        blocks: list[tuple[int, int, int, int]] = []
+        for contour in contours:
+            cx, cy, cw, ch = cv2.boundingRect(contour)
+            area = cw * ch
+
+            if (cw >= config.min_item_width
+                    and ch >= config.min_item_height
+                    and area >= config.min_item_area_px
+                    and area < w * h * 0.5):  # Not the whole page
+                blocks.append((cx, cy, cx + cw, cy + ch))
+
+        if len(blocks) >= 2:
+            return sorted(blocks, key=lambda b: (b[1], b[0]))
+
+    except ImportError:
+        pass
+
+    # --- Strategy 2: Adaptive edge-projection grid estimation ---
     edges_h = np.abs(gray[1:, :] - gray[:-1, :])
     edges_v = np.abs(gray[:, 1:] - gray[:, :-1])
-    
-    # Threshold
-    edge_thresh = 30
-    binary_h = (edges_h > edge_thresh).astype(np.uint8)
-    binary_v = (edges_v > edge_thresh).astype(np.uint8)
-    
-    # Find rectangular regions by looking for enclosed areas
-    # This is a simplified approach - in production you'd use cv2.findContours
-    
-    # For now, use a simple grid-based fallback if contour detection is weak
-    # Divide image into potential cells based on aspect ratio
-    
-    # Assume vocabulary cards are roughly square-ish (aspect 0.5-2.0)
-    # and there are multiple per row
-    
-    estimated_cells_per_row = max(1, w // 300)  # Assume ~300px per cell
-    estimated_rows = max(1, h // 400)  # Assume ~400px per cell
-    
-    cell_w = w // estimated_cells_per_row
-    cell_h = h // estimated_rows
-    
+
+    h_profile = np.mean(edges_h, axis=1)
+    v_profile = np.mean(edges_v, axis=0)
+
+    h_threshold = np.percentile(h_profile, 90)
+    v_threshold = np.percentile(v_profile, 90)
+
+    h_peaks = [i for i in range(len(h_profile)) if h_profile[i] > h_threshold]
+    v_peaks = [i for i in range(len(v_profile)) if v_profile[i] > v_threshold]
+
+    def cluster(positions: list[int], min_gap: int = 50) -> list[int]:
+        if not positions:
+            return []
+        positions = sorted(positions)
+        groups: list[list[int]] = [[positions[0]]]
+        for p in positions[1:]:
+            if p - groups[-1][-1] < min_gap:
+                groups[-1].append(p)
+            else:
+                groups.append([p])
+        return [int(np.mean(g)) for g in groups]
+
+    h_lines_clustered = cluster(h_peaks)
+    v_lines_clustered = cluster(v_peaks)
+
+    # Add boundaries
+    if not h_lines_clustered or h_lines_clustered[0] > 50:
+        h_lines_clustered = [0] + h_lines_clustered
+    if not h_lines_clustered or h_lines_clustered[-1] < h - 50:
+        h_lines_clustered.append(h)
+    if not v_lines_clustered or v_lines_clustered[0] > 50:
+        v_lines_clustered = [0] + v_lines_clustered
+    if not v_lines_clustered or v_lines_clustered[-1] < w - 50:
+        v_lines_clustered.append(w)
+
     blocks = []
-    for row in range(estimated_rows):
-        for col in range(estimated_cells_per_row):
-            x0 = col * cell_w
-            y0 = row * cell_h
-            x1 = min((col + 1) * cell_w, w)
-            y1 = min((row + 1) * cell_h, h)
-            
-            if (x1 - x0) >= config.min_item_width and (y1 - y0) >= config.min_item_height:
+    for i in range(len(h_lines_clustered) - 1):
+        for j in range(len(v_lines_clustered) - 1):
+            y0 = h_lines_clustered[i]
+            y1 = h_lines_clustered[i + 1]
+            x0 = v_lines_clustered[j]
+            x1 = v_lines_clustered[j + 1]
+            cell_w = x1 - x0
+            cell_h = y1 - y0
+            area = cell_w * cell_h
+            if (cell_w >= config.min_item_width
+                    and cell_h >= config.min_item_height
+                    and area >= config.min_item_area_px):
                 blocks.append((x0, y0, x1, y1))
-    
-    return blocks
+
+    if len(blocks) >= 2:
+        return sorted(blocks, key=lambda b: (b[1], b[0]))
+
+    # --- Strategy 3: Try common vocabulary page grid layouts ---
+    best_blocks: list[tuple[int, int, int, int]] = []
+    for cols, rows in [(2, 3), (2, 4), (3, 3), (3, 4), (4, 3), (2, 5), (2, 6)]:
+        cell_w = w // cols
+        cell_h = h // rows
+        if cell_w < config.min_item_width or cell_h < config.min_item_height:
+            continue
+        trial_blocks: list[tuple[int, int, int, int]] = []
+        for r in range(rows):
+            for c in range(cols):
+                x0 = c * cell_w
+                y0 = r * cell_h
+                x1 = min((c + 1) * cell_w, w)
+                y1 = min((r + 1) * cell_h, h)
+                trial_blocks.append((x0, y0, x1, y1))
+        if len(trial_blocks) > len(best_blocks):
+            best_blocks = trial_blocks
+
+    if best_blocks:
+        return sorted(best_blocks, key=lambda b: (b[1], b[0]))
+
+    return [(0, 0, w, h)]
 
 
 def _split_item_into_picture_text(

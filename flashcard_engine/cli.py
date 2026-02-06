@@ -134,6 +134,25 @@ def build_parser() -> argparse.ArgumentParser:
     grh.add_argument("--job-dir", required=True, help="Job directory (workspace/jobs/<job_id>)")
     grh.add_argument("--output", default=None, help="Output HTML path (default: job_dir/review.html)")
 
+    # Extract pairs from PDF/images (unified command)
+    ep = sub.add_parser("extract-pairs", help="Extract picture+text pairs from images or PDF")
+    ep.add_argument("--input", required=True, help="Input image, folder, or PDF path")
+    ep.add_argument("--lang", default="en", help="OCR language (en, de, ko, zh, etc.)")
+    ep.add_argument("--workspace", default="./workspace", help="Workspace directory")
+    ep.add_argument("--source", default="", help="Source label")
+    ep.add_argument("--dpi", type=int, default=300, help="DPI for PDF rendering")
+    ep.add_argument("--output-format", choices=["json", "csv", "anki"], default="json")
+    ep.add_argument("--debug-viz", action="store_true", default=False, help="Save debug visualization images")
+    ep.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps"], help="Device for SAM")
+    ep.add_argument("--min-edge-density", type=float, default=0.05,
+                    help="Minimum edge density for picture detection")
+    ep.add_argument("--max-area-ratio", type=float, default=0.15,
+                    help="Maximum area ratio for pictures")
+    ep.add_argument("--strict", action="store_true", default=False,
+                    help="Use strict filtering (edge_density=0.1, area_ratio=0.10)")
+    ep.add_argument("--export", default=None, help="Optional: export path (.apkg or .csv)")
+    ep.add_argument("--deck-name", default=None, help="Deck name for Anki export")
+
     return p
 
 
@@ -519,6 +538,176 @@ def cmd_generate_review_html(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_extract_pairs(args: argparse.Namespace) -> int:
+    """Extract picture+text pairs from images or PDF (unified command).
+
+    Supports:
+    - Single image: --input photo.jpg
+    - Image folder: --input ./Images/
+    - PDF file:     --input workbook.pdf
+    - Folder with PDFs + images mixed
+    """
+    try:
+        from pathlib import Path
+        from PIL import Image, ImageDraw
+        from .sam_pair_extractor import SAMPairExtractor, PairConfig as SAMPairConfig
+        from .pdf_converter import pdf_to_images
+        import hashlib
+        from datetime import datetime
+
+        input_path = Path(args.input)
+        workspace = Path(args.workspace)
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        image_exts = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
+        pages: list[tuple[str, Image.Image]] = []
+
+        # --- Resolve input to page images ---
+        if input_path.suffix.lower() == ".pdf":
+            print(f"[extract-pairs] Converting PDF: {input_path}")
+            pages = pdf_to_images(input_path, dpi=getattr(args, "dpi", 300))
+            print(f"  -> {len(pages)} pages")
+
+        elif input_path.is_file() and input_path.suffix.lower() in image_exts:
+            img = Image.open(input_path).convert("RGB")
+            pages = [(input_path.stem, img)]
+
+        elif input_path.is_dir():
+            for f in sorted(input_path.iterdir()):
+                if f.suffix.lower() in image_exts:
+                    try:
+                        img = Image.open(f).convert("RGB")
+                        pages.append((f.stem, img))
+                    except Exception:
+                        continue
+                elif f.suffix.lower() == ".pdf":
+                    try:
+                        pdf_pages = pdf_to_images(f, dpi=getattr(args, "dpi", 300))
+                        for pid, img in pdf_pages:
+                            pages.append((f"{f.stem}_{pid}", img))
+                    except Exception as e:
+                        print(f"  [WARN] PDF conversion failed: {f.name}: {e}")
+        else:
+            print(f"ERROR: Unsupported input: {input_path}")
+            return 1
+
+        if not pages:
+            print("ERROR: No pages found!")
+            return 1
+
+        print(f"[extract-pairs] Extracting pairs from {len(pages)} pages...")
+
+        # --- Configure ---
+        config = SAMPairConfig()
+        if getattr(args, "strict", False):
+            config.min_edge_density = 0.10
+            config.max_mask_area_ratio = 0.10
+            print("  [INFO] Using strict filtering mode")
+        else:
+            config.min_edge_density = getattr(args, "min_edge_density", 0.05)
+            config.max_mask_area_ratio = getattr(args, "max_area_ratio", 0.15)
+
+        # --- Generate job ID ---
+        job_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_" + hashlib.sha1(
+            str(input_path).encode(), usedforsecurity=False
+        ).hexdigest()[:8]
+
+        extractor = SAMPairExtractor(
+            workspace=workspace,
+            lang=getattr(args, "lang", "en"),
+            device=getattr(args, "device", "cpu"),
+            config=config,
+        )
+
+        result = extractor.extract_job(job_id, pages)
+        output_dir = workspace / "output" / f"job_{job_id}"
+
+        total_pairs = result.get("total_pairs", 0)
+        needs_review = result.get("total_needing_review", 0)
+
+        print(f"\n{'=' * 60}")
+        print(f"  Extraction complete!")
+        print(f"  Job ID:     {job_id}")
+        print(f"  Pages:      {len(pages)}")
+        print(f"  Pairs:      {total_pairs}")
+        print(f"  Review:     {needs_review}")
+        print(f"  Output:     {output_dir}")
+        print(f"{'=' * 60}")
+
+        # --- Debug visualization ---
+        if getattr(args, "debug_viz", False):
+            viz_dir = output_dir / "debug_viz"
+            viz_dir.mkdir(parents=True, exist_ok=True)
+
+            page_summaries = result.get("pages", [])
+            for summary_data, (page_id, img) in zip(page_summaries, pages):
+                draw_img = img.copy()
+                draw = ImageDraw.Draw(draw_img)
+                for i, pair in enumerate(summary_data.get("pairs", [])):
+                    pic_bbox = pair.get("picture_bbox")
+                    txt_bbox = pair.get("text_bbox")
+                    if pic_bbox:
+                        draw.rectangle(pic_bbox, outline="blue", width=4)
+                        draw.text((pic_bbox[0], pic_bbox[1] - 20), f"P#{i+1}", fill="blue")
+                    if txt_bbox:
+                        draw.rectangle(txt_bbox, outline="red", width=3)
+                        draw.text((txt_bbox[0], txt_bbox[1] - 20), f"T#{i+1}", fill="red")
+                    if pic_bbox and txt_bbox:
+                        pc = ((pic_bbox[0]+pic_bbox[2])//2, (pic_bbox[1]+pic_bbox[3])//2)
+                        tc = ((txt_bbox[0]+txt_bbox[2])//2, (txt_bbox[1]+txt_bbox[3])//2)
+                        draw.line([pc, tc], fill="lime", width=2)
+                viz_path = viz_dir / f"{page_id}_pairs.png"
+                draw_img.save(viz_path)
+            print(f"  Debug viz:  {viz_dir}")
+
+        # --- Export ---
+        export_path_str = getattr(args, "export", None)
+        if export_path_str:
+            export_path = Path(export_path_str)
+            print(f"\n  Exporting to {export_path}...")
+            job_summary_path = output_dir / "job_summary.json"
+            if job_summary_path.exists():
+                from .utils import load_json as _load_json
+                summary_data = _load_json(job_summary_path)
+                cards = []
+                for page_data in summary_data.get("pages", []):
+                    for pair in page_data.get("pairs", []):
+                        cards.append({
+                            "card_id": pair.get("pair_id", ""),
+                            "page_id": page_data.get("page_id", ""),
+                            "word": pair.get("caption_text", ""),
+                            "front_image_path": pair.get("picture_path", ""),
+                            "confidence": pair.get("confidence", 0.0),
+                            "needs_review": pair.get("needs_review", False),
+                            "status": "active" if not pair.get("needs_review") else "review",
+                        })
+                from .utils import write_json as _write_json
+                result_json = {
+                    "job": {"job_id": job_id, "mode": "pair_sam"},
+                    "cards": cards,
+                }
+                _write_json(output_dir / "result.json", result_json)
+
+                if export_path.suffix.lower() == ".apkg":
+                    stats = export_apkg(
+                        job_dir=output_dir,
+                        out_path=export_path,
+                        deck_name=getattr(args, "deck_name", None) or input_path.stem,
+                    )
+                    print(f"  -> Exported {stats.cards_exported} cards to {export_path}")
+                elif export_path.suffix.lower() == ".csv":
+                    stats = export_csv(job_dir=output_dir, out_path=export_path)
+                    print(f"  -> Exported {stats.cards_exported} cards to {export_path}")
+
+        return 0
+
+    except Exception as e:
+        import traceback
+        print(f"extract_pairs_failed: {e}")
+        traceback.print_exc()
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -552,6 +741,9 @@ def main(argv: list[str] | None = None) -> int:
     
     if args.command == "generate-review-html":
         return cmd_generate_review_html(args)
+
+    if args.command == "extract-pairs":
+        return cmd_extract_pairs(args)
 
     raise SystemExit(2)
 

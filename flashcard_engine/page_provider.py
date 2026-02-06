@@ -67,9 +67,14 @@ class PageProvider:
         exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
         files = sorted([p for p in folder.iterdir() if p.suffix.lower() in exts])
 
+        # Also collect PDFs in the folder
+        pdf_files = sorted([p for p in folder.iterdir() if p.suffix.lower() == ".pdf"])
+
         ensure_dir(self.paths.pages_dir)
+
+        page_num = 0
         for i, img_path in enumerate(files):
-            page_num = i + 1
+            page_num += 1
             page_id = f"page_{page_num:03d}"
             source_ref = f"{folder.name}/{img_path.name}"
             rel_path = f"pages/{page_id}.png"
@@ -82,4 +87,28 @@ class PageProvider:
                 img = Image.open(img_path).convert("RGB")
                 img.save(abs_path, format="PNG")
 
-            yield Page(page_index=i, page_id=page_id, source_ref=source_ref, image_path=rel_path), img
+            yield Page(page_index=page_num - 1, page_id=page_id, source_ref=source_ref, image_path=rel_path), img
+
+        # Process PDFs found in the image folder
+        for pdf_path in pdf_files:
+            try:
+                from .pdf_converter import pdf_to_images as _pdf_to_images
+                pdf_pages = _pdf_to_images(pdf_path, dpi=self.dpi)
+                for pid, pdf_img in pdf_pages:
+                    page_num += 1
+                    page_id = f"page_{page_num:03d}"
+                    source_ref = f"{folder.name}/{pdf_path.name}#{pid}"
+                    rel_path = f"pages/{page_id}.png"
+                    abs_path = self.paths.job_dir / rel_path
+                    abs_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    if abs_path.exists():
+                        img = Image.open(abs_path).convert("RGB")
+                    else:
+                        pdf_img.save(abs_path, format="PNG")
+                        img = pdf_img
+
+                    yield Page(page_index=page_num - 1, page_id=page_id, source_ref=source_ref, image_path=rel_path), img
+            except Exception as e:
+                print(f"[PageProvider] Warning: failed to process PDF {pdf_path.name}: {e}")
+                continue

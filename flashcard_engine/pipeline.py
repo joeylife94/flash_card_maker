@@ -16,6 +16,7 @@ from .ocr import OCRExtractor
 from .page_provider import PageProvider
 from .panel_debug import PanelDebugPack, PanelDebugConfig
 from .pair_extractor import PairExtractor, PairConfig, LearningCache
+from .pdf_converter import pdf_to_images, iter_pdf_pages
 from .sam_pair_extractor import SAMPairExtractor
 from .segmenter import Segmenter
 from .utils import utc_now_iso, write_json
@@ -327,7 +328,7 @@ class EnginePipeline:
                 metrics["pictures_detected"] += summary.pictures_detected
                 metrics["text_blocks_detected"] += summary.text_blocks_detected
                 
-                all_summaries.append(summary.to_dict())
+                all_summaries.append(asdict(summary))
                 metrics["pages_processed"] += 1
                 
             except Exception as e:
